@@ -1,0 +1,61 @@
+test.sh
+# Binary files for executables and plugins
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Output of the 'go test' command
+*.test
+*.out
+
+# Build directories
+/build/
+/bin/
+/dist/
+
+# Vendor directory (if you're using Go modules and don't want to commit dependencies)
+vendor/
+
+# Go workspace files
+go.work
+go.work.sum
+
+# Generated files
+gen/
+
+# Coverage profiles
+*.coverprofile
+*.cov
+coverage.out
+*.prof
+
+# Logs and debug files
+*.log
+*.tmp
+*.bak
+*.old
+
+# Editor and IDE files
+.idea/
+.vscode/
+*.swp
+*.sublime-project
+*.sublime-workspace
+
+# MacOS files
+.DS_Store
+
+# Node modules (if your project includes frontend components)
+node_modules/
+
+# Dependency management files (if you're using dep or Glide)
+Gopkg.lock
+glide.lock
+
+# Module cache
+/pkg/mod/
+
+# Temporary files
+*.session
+tags
