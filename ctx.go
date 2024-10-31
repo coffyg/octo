@@ -2,8 +2,9 @@ package octo
 
 import (
 	"context"
-	"fmt"
+	"net"
 	"net/http"
+	"strings"
 
 	"github.com/bytedance/sonic"
 )
@@ -49,12 +50,13 @@ func (c *Ctx[V]) SendJSON(statusCode int, v interface{}) {
 	response, err := sonic.Marshal(v)
 	if err != nil {
 		c.SetStatus(http.StatusInternalServerError)
-		c.ResponseWriter.Write([]byte(fmt.Sprintf(`"error encoding response: %s"`, err)))
+		c.ResponseWriter.Write([]byte(`"error encoding response: ` + err.Error() + `"`))
 		return
 	}
 	c.SetStatus(statusCode)
 	c.ResponseWriter.Write(response)
 }
+
 func (c *Ctx[V]) QueryParam(key string) string {
 	values := c.Request.URL.Query()[key]
 	if len(values) > 0 {
@@ -78,9 +80,29 @@ func (c *Ctx[V]) QueryArray(key string) []string {
 func (c *Ctx[V]) QueryMap() map[string][]string {
 	return c.Request.URL.Query()
 }
+
 func (c *Ctx[V]) Context() context.Context {
 	return c.Request.Context()
 }
+
 func (c *Ctx[V]) Done() {
 	c.Request.Context().Done()
+}
+
+// ClientIP returns the client's IP address, even if behind a proxy
+func (c *Ctx[V]) ClientIP() string {
+	if ip := c.GetHeader("X-Forwarded-For"); ip != "" {
+		if idx := strings.IndexByte(ip, ','); idx != -1 {
+			ip = ip[:idx]
+		}
+		return strings.TrimSpace(ip)
+	}
+	if ip := c.GetHeader("X-Real-IP"); ip != "" {
+		return strings.TrimSpace(ip)
+	}
+	ip, _, err := net.SplitHostPort(strings.TrimSpace(c.Request.RemoteAddr))
+	if err != nil {
+		return c.Request.RemoteAddr
+	}
+	return ip
 }
