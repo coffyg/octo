@@ -292,3 +292,90 @@ func TestRouteGroups(t *testing.T) {
 		t.Errorf("Expected group middleware not to be called")
 	}
 }
+func TestGlobalMiddlewareOrder(t *testing.T) {
+	router := NewRouter[CustomData]()
+
+	// Variables to track the order of middleware execution
+	executionOrder := []string{}
+
+	// Global middleware
+	router.UseGlobal(func(next HandlerFunc[CustomData]) HandlerFunc[CustomData] {
+		return func(ctx *Ctx[CustomData]) {
+			executionOrder = append(executionOrder, "global")
+			next(ctx)
+		}
+	})
+
+	// Middleware to test group application
+	groupMiddleware := func(next HandlerFunc[CustomData]) HandlerFunc[CustomData] {
+		return func(ctx *Ctx[CustomData]) {
+			executionOrder = append(executionOrder, "group")
+			next(ctx)
+		}
+	}
+
+	// Create a group with middleware
+	apiGroup := router.Group("/api", groupMiddleware)
+
+	// Add a route to the group
+	apiGroup.GET("/test", func(ctx *Ctx[CustomData]) {
+		executionOrder = append(executionOrder, "handler")
+		ctx.ResponseWriter.Write([]byte("OK"))
+	})
+
+	// Send request
+	req := httptest.NewRequest("GET", "/api/test", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	// Check the execution order
+	expectedOrder := []string{"global", "group", "handler"}
+	if !reflect.DeepEqual(executionOrder, expectedOrder) {
+		t.Errorf("Expected execution order %v, got %v", expectedOrder, executionOrder)
+	}
+}
+
+func TestCookieMethods(t *testing.T) {
+	router := NewRouter[CustomData]()
+
+	router.GET("/cookie", func(ctx *Ctx[CustomData]) {
+		// Try to get the cookie
+		value, err := ctx.Cookie("test_cookie")
+		if err != nil {
+			// Set the cookie if not present
+			ctx.SetCookie("test_cookie", "test_value", 3600, "/", "", false, true)
+			ctx.ResponseWriter.Write([]byte("Cookie Set"))
+		} else {
+			ctx.ResponseWriter.Write([]byte("Cookie Value: " + value))
+		}
+	})
+
+	// First request to set the cookie
+	req := httptest.NewRequest("GET", "/cookie", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	resp := w.Result()
+	body, _ := io.ReadAll(resp.Body)
+	if string(body) != "Cookie Set" {
+		t.Errorf("Expected 'Cookie Set', got '%s'", string(body))
+	}
+
+	// Extract the Set-Cookie header
+	cookies := resp.Cookies()
+	if len(cookies) == 0 {
+		t.Fatal("Expected a Set-Cookie header")
+	}
+
+	// Second request with the cookie
+	req = httptest.NewRequest("GET", "/cookie", nil)
+	for _, cookie := range cookies {
+		req.AddCookie(cookie)
+	}
+	w = httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	resp = w.Result()
+	body, _ = io.ReadAll(resp.Body)
+	if string(body) != "Cookie Value: test_value" {
+		t.Errorf("Expected 'Cookie Value: test_value', got '%s'", string(body))
+	}
+}

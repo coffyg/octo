@@ -106,3 +106,26 @@ func (c *Ctx[V]) ClientIP() string {
 	}
 	return ip
 }
+
+// Cookie retrieves the value of the named cookie from the request.
+// It returns an error if the cookie is not present.
+func (c *Ctx[V]) Cookie(name string) (string, error) {
+	cookie, err := c.Request.Cookie(name)
+	if err != nil {
+		return "", err
+	}
+	return cookie.Value, nil
+}
+
+// SetCookie adds a Set-Cookie header to the response.
+func (c *Ctx[V]) SetCookie(name, value string, maxAge int, path, domain string, secure, httpOnly bool) {
+	http.SetCookie(c.ResponseWriter, &http.Cookie{
+		Name:     name,
+		Value:    value,
+		MaxAge:   maxAge,
+		Path:     path,
+		Domain:   domain,
+		Secure:   secure,
+		HttpOnly: httpOnly,
+	})
+}

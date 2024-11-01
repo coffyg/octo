@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"time"
+	"unsafe"
 
 	"github.com/google/uuid"
 )
@@ -22,21 +23,20 @@ type node[V any] struct {
 }
 
 type Router[V any] struct {
-	root       *node[V]
-	middleware []MiddlewareFunc[V]
-}
-
-var hasBody = map[string]bool{
-	"POST":   true,
-	"PUT":    true,
-	"PATCH":  true,
-	"DELETE": true,
+	root               *node[V]
+	middleware         []MiddlewareFunc[V]
+	preGroupMiddleware []MiddlewareFunc[V]
 }
 
 func NewRouter[V any]() *Router[V] {
 	return &Router[V]{
 		root: &node[V]{},
 	}
+}
+
+// UseGlobal adds middleware that applies to all routes before group middleware
+func (r *Router[V]) UseGlobal(mw MiddlewareFunc[V]) {
+	r.preGroupMiddleware = append(r.preGroupMiddleware, mw)
 }
 
 // Use adds a global middleware to the router
@@ -89,6 +89,33 @@ type Group[V any] struct {
 
 // Group creates a new route group with the given prefix and middleware
 func (r *Router[V]) Group(prefix string, middleware ...MiddlewareFunc[V]) *Group[V] {
+	current := r.root
+	parts := splitPath(prefix)
+	for _, part := range parts {
+		if part == "" {
+			continue
+		}
+		if part[0] == ':' {
+			paramName := part[1:]
+			if current.paramChild == nil {
+				current.paramChild = &node[V]{}
+				current.paramChild.paramName = paramName
+			}
+			current = current.paramChild
+		} else {
+			if current.staticChildren == nil {
+				current.staticChildren = make(map[string]*node[V])
+			}
+			if current.staticChildren[part] == nil {
+				current.staticChildren[part] = &node[V]{}
+			}
+			current = current.staticChildren[part]
+		}
+		// Assign middleware to current node, avoiding duplicates
+		if len(middleware) > 0 {
+			current.middleware = appendUniqueMiddleware(current.middleware, middleware...)
+		}
+	}
 	return &Group[V]{
 		prefix:     prefix,
 		router:     r,
@@ -98,52 +125,44 @@ func (r *Router[V]) Group(prefix string, middleware ...MiddlewareFunc[V]) *Group
 
 // Methods to add routes to the group
 func (g *Group[V]) GET(path string, handler HandlerFunc[V], middleware ...MiddlewareFunc[V]) {
-	combinedMiddleware := append(g.middleware, middleware...)
 	fullPath := g.prefix + path
-	g.router.GET(fullPath, handler, combinedMiddleware...)
+	g.router.GET(fullPath, handler, middleware...)
 }
 
 func (g *Group[V]) POST(path string, handler HandlerFunc[V], middleware ...MiddlewareFunc[V]) {
-	combinedMiddleware := append(g.middleware, middleware...)
 	fullPath := g.prefix + path
-	g.router.POST(fullPath, handler, combinedMiddleware...)
+	g.router.POST(fullPath, handler, middleware...)
 }
 
 func (g *Group[V]) PUT(path string, handler HandlerFunc[V], middleware ...MiddlewareFunc[V]) {
-	combinedMiddleware := append(g.middleware, middleware...)
 	fullPath := g.prefix + path
-	g.router.PUT(fullPath, handler, combinedMiddleware...)
+	g.router.PUT(fullPath, handler, middleware...)
 }
 
 func (g *Group[V]) DELETE(path string, handler HandlerFunc[V], middleware ...MiddlewareFunc[V]) {
-	combinedMiddleware := append(g.middleware, middleware...)
 	fullPath := g.prefix + path
-	g.router.DELETE(fullPath, handler, combinedMiddleware...)
+	g.router.DELETE(fullPath, handler, middleware...)
 }
 
 func (g *Group[V]) PATCH(path string, handler HandlerFunc[V], middleware ...MiddlewareFunc[V]) {
-	combinedMiddleware := append(g.middleware, middleware...)
 	fullPath := g.prefix + path
-	g.router.PATCH(fullPath, handler, combinedMiddleware...)
+	g.router.PATCH(fullPath, handler, middleware...)
 }
 
 func (g *Group[V]) OPTIONS(path string, handler HandlerFunc[V], middleware ...MiddlewareFunc[V]) {
-	combinedMiddleware := append(g.middleware, middleware...)
 	fullPath := g.prefix + path
-	g.router.OPTIONS(fullPath, handler, combinedMiddleware...)
+	g.router.OPTIONS(fullPath, handler, middleware...)
 }
 
 func (g *Group[V]) HEAD(path string, handler HandlerFunc[V], middleware ...MiddlewareFunc[V]) {
-	combinedMiddleware := append(g.middleware, middleware...)
 	fullPath := g.prefix + path
-	g.router.HEAD(fullPath, handler, combinedMiddleware...)
+	g.router.HEAD(fullPath, handler, middleware...)
 }
 
 // ANY adds a route that matches all HTTP methods
 func (g *Group[V]) ANY(path string, handler HandlerFunc[V], middleware ...MiddlewareFunc[V]) {
-	combinedMiddleware := append(g.middleware, middleware...)
 	fullPath := g.prefix + path
-	g.router.ANY(fullPath, handler, combinedMiddleware...)
+	g.router.ANY(fullPath, handler, middleware...)
 }
 
 // addRoute adds a route with associated handler and middleware
@@ -173,12 +192,6 @@ func (r *Router[V]) addRoute(method, path string, handler HandlerFunc[V], middle
 			}
 			current = current.staticChildren[part]
 		}
-		if len(middleware) > 0 {
-			if current.middleware == nil {
-				current.middleware = make([]MiddlewareFunc[V], 0)
-			}
-			current.middleware = append(current.middleware, middleware...)
-		}
 	}
 
 	if current.handlers == nil {
@@ -191,37 +204,30 @@ func (r *Router[V]) addRoute(method, path string, handler HandlerFunc[V], middle
 
 	current.isLeaf = true
 	current.handlers[method] = handler
+
 	if len(middleware) > 0 {
-		current.middleware = middleware
+		current.middleware = appendUniqueMiddleware(current.middleware, middleware...)
 	}
 }
 
 // splitPath splits the path into segments
-/*
 func splitPath(path string) []string {
-	if path == "/" {
-		return []string{}
-	}
-	parts := strings.Split(path, "/")
-	if parts[0] == "" {
-		parts = parts[1:]
-	}
-	return parts
-}
-*/
-func splitPath(path string) []string {
-	var parts []string
+	parts := make([]string, 0, 10) // Preallocate with a reasonable default capacity
 	start := 0
-	for i := 0; i < len(path); i++ {
-		if path[i] == '/' {
-			if start < i {
-				parts = append(parts, path[start:i])
-			}
-			start = i + 1
+	i := 0
+	for i < len(path) {
+		// Skip consecutive delimiters
+		for i < len(path) && path[i] == '/' {
+			i++
 		}
-	}
-	if start < len(path) {
-		parts = append(parts, path[start:])
+		start = i
+		// Find the next delimiter
+		for i < len(path) && path[i] != '/' {
+			i++
+		}
+		if start < i {
+			parts = append(parts, path[start:i])
+		}
 	}
 	return parts
 }
@@ -255,6 +261,8 @@ func (r *Router[V]) search(method, path string, params map[string]string) (Handl
 	}
 
 	handler, ok := current.handlers[method]
+	// Remove the duplicate addition of current.middleware
+	// The middleware for the leaf node has already been added during traversal
 	return handler, middlewareChain, ok && current.isLeaf
 }
 
@@ -264,6 +272,10 @@ func applyMiddleware[V any](handler HandlerFunc[V], middleware []MiddlewareFunc[
 		handler = middleware[i](handler)
 	}
 	return handler
+}
+
+func hasBodyIf(method string) bool {
+	return method == "POST" || method == "PUT" || method == "PATCH" || method == "DELETE"
 }
 
 // ServeHTTP implements the http.Handler interface
@@ -286,7 +298,7 @@ func (r *Router[V]) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	}
 
 	var body []byte
-	if hasBody[req.Method] {
+	if hasBodyIf(method) {
 		var err error
 		body, err = io.ReadAll(req.Body)
 		if err != nil {
@@ -310,9 +322,31 @@ func (r *Router[V]) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		ctx.Query[key] = &value
 	}
 
-	// Combine global and route-specific middleware
-	allMiddleware := append(r.middleware, middlewareChain...)
+	// Combine middleware in the correct order
+	// preGroupMiddleware -> global middleware -> route-specific middleware
+	allMiddleware := append(r.preGroupMiddleware, r.middleware...)
+	allMiddleware = append(allMiddleware, middlewareChain...)
 	handler = applyMiddleware(handler, allMiddleware)
 
 	handler(ctx)
+}
+
+// appendUniqueMiddleware appends middleware functions to a slice, avoiding duplicates
+func appendUniqueMiddleware[V any](existing []MiddlewareFunc[V], newMiddleware ...MiddlewareFunc[V]) []MiddlewareFunc[V] {
+	existingSet := make(map[uintptr]struct{}, len(existing))
+	for _, emw := range existing {
+		existingSet[funcPointer(emw)] = struct{}{}
+	}
+	for _, nmw := range newMiddleware {
+		ptr := funcPointer(nmw)
+		if _, found := existingSet[ptr]; !found {
+			existing = append(existing, nmw)
+			existingSet[ptr] = struct{}{}
+		}
+	}
+	return existing
+}
+
+func funcPointer[V any](f MiddlewareFunc[V]) uintptr {
+	return *(*uintptr)(unsafe.Pointer(&f))
 }
