@@ -267,9 +267,34 @@ func (r *Router[V]) search(method, path string, params map[string]string) (Handl
 }
 
 // applyMiddleware wraps the handler with middleware functions
+
+func wrapMiddleware[V any](mw MiddlewareFunc[V]) MiddlewareFunc[V] {
+	return func(next HandlerFunc[V]) HandlerFunc[V] {
+		return func(ctx *Ctx[V]) {
+			if ctx.done {
+				return
+			}
+			mw(next)(ctx)
+		}
+	}
+}
+
+func wrapHandler[V any](handler HandlerFunc[V]) HandlerFunc[V] {
+	return func(ctx *Ctx[V]) {
+		if ctx.done {
+			return
+		}
+		handler(ctx)
+	}
+}
+
 func applyMiddleware[V any](handler HandlerFunc[V], middleware []MiddlewareFunc[V]) HandlerFunc[V] {
+	// Wrap the handler
+	handler = wrapHandler(handler)
+	// Wrap and apply middleware
 	for i := len(middleware) - 1; i >= 0; i-- {
-		handler = middleware[i](handler)
+		mw := wrapMiddleware(middleware[i])
+		handler = mw(handler)
 	}
 	return handler
 }
@@ -286,15 +311,21 @@ func (r *Router[V]) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	params := make(map[string]string)
 	handler, middlewareChain, ok := r.search(method, path, params)
 
-	if !ok {
-		http.NotFound(w, req)
-		return
-	}
+	// Combine middleware in the correct order
+	// preGroupMiddleware -> global middleware -> route-specific middleware
+	allMiddleware := append(r.preGroupMiddleware, r.middleware...)
+	allMiddleware = append(allMiddleware, middlewareChain...)
 
-	if req.Method == "OPTIONS" {
-		w.Header().Set("Allow", "GET, POST, PUT, DELETE, PATCH, OPTIONS, HEAD")
-		w.WriteHeader(http.StatusOK)
-		return
+	if !ok {
+		// Route not found, define a default handler
+		handler = func(ctx *Ctx[V]) {
+			if req.Method == "OPTIONS" {
+				w.Header().Set("Allow", "GET, POST, PUT, DELETE, PATCH, OPTIONS, HEAD")
+				w.WriteHeader(http.StatusOK)
+				return
+			}
+			http.NotFound(ctx.ResponseWriter, ctx.Request)
+		}
 	}
 
 	var body []byte
@@ -322,10 +353,6 @@ func (r *Router[V]) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		ctx.Query[key] = &value
 	}
 
-	// Combine middleware in the correct order
-	// preGroupMiddleware -> global middleware -> route-specific middleware
-	allMiddleware := append(r.preGroupMiddleware, r.middleware...)
-	allMiddleware = append(allMiddleware, middlewareChain...)
 	handler = applyMiddleware(handler, allMiddleware)
 
 	handler(ctx)

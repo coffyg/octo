@@ -19,6 +19,7 @@ type Ctx[V any] struct {
 	Body           []byte               `json:"-"`
 	Headers        http.Header          `json:"-"`
 	Custom         V                    // Generic Custom Field
+	done           bool                 // Add a done flag
 }
 
 func (c *Ctx[V]) SetHeader(key, value string) {
@@ -94,6 +95,7 @@ func (c *Ctx[V]) Context() context.Context {
 }
 
 func (c *Ctx[V]) Done() {
+	c.done = true
 	c.Request.Context().Done()
 }
 
