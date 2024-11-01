@@ -93,10 +93,6 @@ func (c *Ctx[v]) DefaultQueryParam(key, defaultValue string) string {
 	return defaultValue
 }
 
-func (c *Ctx[V]) QueryArray(key string) []string {
-	return c.Request.URL.Query()[key]
-}
-
 func (c *Ctx[V]) QueryValue(key string) string {
 	values := c.Request.URL.Query()[key]
 	if len(values) > 0 {
