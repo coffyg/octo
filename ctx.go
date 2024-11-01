@@ -68,6 +68,11 @@ func (c *Ctx[V]) SendJSON(statusCode int, v interface{}) {
 }
 
 func (c *Ctx[V]) QueryParam(key string) string {
+	// check if it's in params
+	if value, ok := c.Params[key]; ok {
+		return value
+	}
+
 	values := c.Request.URL.Query()[key]
 	if len(values) > 0 {
 		return values[0]
@@ -75,12 +80,29 @@ func (c *Ctx[V]) QueryParam(key string) string {
 	return ""
 }
 func (c *Ctx[v]) DefaultQueryParam(key, defaultValue string) string {
+	// check if it's in params
+	if value, ok := c.Params[key]; ok {
+		return value
+	}
+
 	values := c.Request.URL.Query()[key]
 	if len(values) > 0 {
 		return values[0]
 	}
 
 	return defaultValue
+}
+
+func (c *Ctx[V]) QueryArray(key string) []string {
+	return c.Request.URL.Query()[key]
+}
+
+func (c *Ctx[V]) QueryValue(key string) string {
+	values := c.Request.URL.Query()[key]
+	if len(values) > 0 {
+		return values[0]
+	}
+	return ""
 }
 
 func (c *Ctx[V]) DefaultQuery(key, defaultValue string) string {
