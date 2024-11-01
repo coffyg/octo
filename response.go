@@ -114,8 +114,20 @@ func (c *Ctx[V]) NewJSONResult(data interface{}, pagination *octypes.Pagination)
 	}
 	c.SendJSON(http.StatusOK, result)
 }
+
+// SendJSON sends a response with the provided status code and data
 func (c *Ctx[V]) SendData(statusCode int, contentType string, data []byte) {
 	c.SetHeader("Content-Type", contentType)
 	c.SetStatus(statusCode)
 	c.ResponseWriter.Write(data)
+}
+
+// Send a file as response
+func (c *Ctx[V]) File(urlPath string, filePath string) {
+	http.ServeFile(c.ResponseWriter, c.Request, filePath)
+}
+
+// Send a file as response from a http.FileSystem
+func (c *Ctx[V]) FileFromFS(urlPath string, fs http.FileSystem, filePath string) {
+	http.FileServer(fs).ServeHTTP(c.ResponseWriter, c.Request)
 }
