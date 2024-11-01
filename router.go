@@ -212,7 +212,7 @@ func (r *Router[V]) addRoute(method, path string, handler HandlerFunc[V], middle
 
 // splitPath splits the path into segments
 func splitPath(path string) []string {
-	parts := make([]string, 0, 10) // Preallocate with a reasonable default capacity
+	parts := make([]string, 0, 10)
 	start := 0
 	i := 0
 	for i < len(path) {
@@ -221,12 +221,24 @@ func splitPath(path string) []string {
 			i++
 		}
 		start = i
-		// Find the next delimiter
-		for i < len(path) && path[i] != '/' {
+		// Find the next delimiter or parameter
+		for i < len(path) && path[i] != '/' && path[i] != ':' {
 			i++
 		}
 		if start < i {
 			parts = append(parts, path[start:i])
+		}
+		// Handle parameter delimiter ':'
+		if i < len(path) && path[i] == ':' {
+			i++ // Skip ':'
+			paramStart := i
+			// Read the parameter name
+			for i < len(path) && path[i] != '/' && path[i] != ':' {
+				i++
+			}
+			if paramStart < i {
+				parts = append(parts, ":"+path[paramStart:i])
+			}
 		}
 	}
 	return parts
@@ -261,8 +273,6 @@ func (r *Router[V]) search(method, path string, params map[string]string) (Handl
 	}
 
 	handler, ok := current.handlers[method]
-	// Remove the duplicate addition of current.middleware
-	// The middleware for the leaf node has already been added during traversal
 	return handler, middlewareChain, ok && current.isLeaf
 }
 
