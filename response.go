@@ -1,7 +1,6 @@
 package octo
 
 import (
-	"fmt"
 	"net/http"
 	"runtime"
 	"time"
@@ -52,8 +51,7 @@ func (c *Ctx[V]) SendError(code string, err error) {
 		message += ": " + err.Error()
 		if pc, file, line, ok := runtime.Caller(1); ok {
 			funcName := runtime.FuncForPC(pc).Name()
-			// Replace with your logging system
-			fmt.Printf("Error: %s in %s:%d %s\n", err.Error(), file, line, funcName)
+			logger.Error().Err(err).Msgf("[octo-error] error: %s in %s:%d %s\n", err.Error(), file, line, funcName)
 		}
 	}
 	result := BaseResult{
@@ -63,6 +61,28 @@ func (c *Ctx[V]) SendError(code string, err error) {
 		Time:    float64(time.Now().UnixNano()-c.StartTime) / 1e9,
 	}
 	c.SendJSON(apiError.Code, result)
+}
+
+func (c *Ctx[V]) SendErrorStatus(statusCode int, code string, err error) {
+	apiError, ok := APIErrors[code]
+	if !ok {
+		apiError = APIErrors["err_unknown_error"]
+	}
+	message := apiError.Message
+	if err != nil {
+		message += ": " + err.Error()
+		if pc, file, line, ok := runtime.Caller(1); ok {
+			funcName := runtime.FuncForPC(pc).Name()
+			logger.Error().Err(err).Msgf("[octo-error] error: %s in %s:%d %s\n", err.Error(), file, line, funcName)
+		}
+	}
+	result := BaseResult{
+		Result:  "error",
+		Message: message,
+		Token:   code,
+		Time:    float64(time.Now().UnixNano()-c.StartTime) / 1e9,
+	}
+	c.SendJSON(statusCode, result)
 }
 
 // Send404 sends a 404 Not Found error response
@@ -89,4 +109,9 @@ func (c *Ctx[V]) NewJSONResult(data interface{}, pagination *octypes.Pagination)
 		Paging: pagination,
 	}
 	c.SendJSON(http.StatusOK, result)
+}
+func (c *Ctx[V]) SendData(statusCode int, contentType string, data []byte) {
+	c.SetHeader("Content-Type", contentType)
+	c.SetStatus(statusCode)
+	c.ResponseWriter.Write(data)
 }
