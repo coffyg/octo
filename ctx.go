@@ -64,6 +64,14 @@ func (c *Ctx[V]) QueryParam(key string) string {
 	}
 	return ""
 }
+func (c *Ctx[v]) DefaultQueryParam(key, defaultValue string) string {
+	values := c.Request.URL.Query()[key]
+	if len(values) > 0 {
+		return values[0]
+	}
+
+	return defaultValue
+}
 
 func (c *Ctx[V]) DefaultQuery(key, defaultValue string) string {
 	values := c.Request.URL.Query()[key]
