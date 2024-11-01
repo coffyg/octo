@@ -2,6 +2,7 @@ package octo
 
 import (
 	"context"
+	"errors"
 	"net"
 	"net/http"
 	"strings"
@@ -138,4 +139,12 @@ func (c *Ctx[V]) SetCookie(name, value string, maxAge int, path, domain string, 
 		Secure:   secure,
 		HttpOnly: httpOnly,
 	})
+}
+
+// BindJSON binds the request body into an interface.
+func (c *Ctx[V]) ShouldBindJSON(obj interface{}) error {
+	if len(c.Body) == 0 {
+		return errors.New("request body is empty")
+	}
+	return sonic.Unmarshal(c.Body, obj)
 }
