@@ -4,9 +4,12 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -447,5 +450,104 @@ func TestUseGlobalMiddlewareWithoutDone(t *testing.T) {
 
 	if resp.StatusCode != http.StatusNotFound {
 		t.Errorf("Expected status 404, got %d", resp.StatusCode)
+	}
+}
+
+func TestShouldBind(t *testing.T) {
+	router := NewRouter[CustomData]()
+
+	type TestData struct {
+		Name string `json:"name" form:"name" xml:"name"`
+		Age  int    `json:"age" form:"age" xml:"age"`
+	}
+
+	router.POST("/bind", func(ctx *Ctx[CustomData]) {
+		var data TestData
+		if err := ctx.ShouldBind(&data); err != nil {
+			ctx.SendJSON(http.StatusBadRequest, map[string]string{
+				"error": err.Error(),
+			})
+			return
+		}
+		ctx.SendJSON(http.StatusOK, data)
+	})
+
+	// Test with JSON
+	jsonData := `{"name": "John", "age": 30}`
+	req := httptest.NewRequest("POST", "/bind", strings.NewReader(jsonData))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	resp := w.Result()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", resp.StatusCode)
+	}
+	var responseData TestData
+	if err := json.Unmarshal(body, &responseData); err != nil {
+		t.Fatalf("Failed to unmarshal response: %v", err)
+	}
+	if responseData.Name != "John" || responseData.Age != 30 {
+		t.Errorf("Unexpected response data: %+v", responseData)
+	}
+
+	// Test with form data
+	form := url.Values{}
+	form.Add("name", "Jane")
+	form.Add("age", "25")
+	req = httptest.NewRequest("POST", "/bind", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w = httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	resp = w.Result()
+	body, _ = io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", resp.StatusCode)
+	}
+	if err := json.Unmarshal(body, &responseData); err != nil {
+		t.Fatalf("Failed to unmarshal response: %v", err)
+	}
+	if responseData.Name != "Jane" || responseData.Age != 25 {
+		t.Errorf("Unexpected response data: %+v", responseData)
+	}
+
+	// Test with multipart form data
+	var b bytes.Buffer
+	wr := multipart.NewWriter(&b)
+	wr.WriteField("name", "Alice")
+	wr.WriteField("age", "28")
+	wr.Close()
+	req = httptest.NewRequest("POST", "/bind", &b)
+	req.Header.Set("Content-Type", wr.FormDataContentType())
+	w = httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	resp = w.Result()
+	body, _ = io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", resp.StatusCode)
+	}
+	if err := json.Unmarshal(body, &responseData); err != nil {
+		t.Fatalf("Failed to unmarshal response: %v", err)
+	}
+	if responseData.Name != "Alice" || responseData.Age != 28 {
+		t.Errorf("Unexpected response data: %+v", responseData)
+	}
+
+	// Test with XML
+	xmlData := `<TestData><name>Bob</name><age>35</age></TestData>`
+	req = httptest.NewRequest("POST", "/bind", strings.NewReader(xmlData))
+	req.Header.Set("Content-Type", "application/xml")
+	w = httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	resp = w.Result()
+	body, _ = io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", resp.StatusCode)
+	}
+	if err := json.Unmarshal(body, &responseData); err != nil {
+		t.Fatalf("Failed to unmarshal response: %v", err)
+	}
+	if responseData.Name != "Bob" || responseData.Age != 35 {
+		t.Errorf("Unexpected response data: %+v", responseData)
 	}
 }

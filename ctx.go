@@ -1,14 +1,22 @@
 package octo
 
 import (
+	"bytes"
 	"context"
+	"encoding/xml"
 	"errors"
+	"io"
+	"mime"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/bytedance/sonic"
+	"github.com/go-playground/form/v4"
 )
+
+var formDecoder = form.NewDecoder()
 
 type Ctx[V any] struct {
 	ResponseWriter http.ResponseWriter  `json:"-"`
@@ -147,4 +155,61 @@ func (c *Ctx[V]) ShouldBindJSON(obj interface{}) error {
 		return errors.New("request body is empty")
 	}
 	return sonic.Unmarshal(c.Body, obj)
+}
+
+// ShouldBindXML binds the XML request body into the provided object.
+func (c *Ctx[V]) ShouldBindXML(obj interface{}) error {
+	if len(c.Body) == 0 {
+		return errors.New("request body is empty")
+	}
+	return xml.Unmarshal(c.Body, obj)
+}
+
+// ShouldBindForm binds form data into the provided object.
+func (c *Ctx[V]) ShouldBindForm(obj interface{}) error {
+	// Reset Request.Body
+	c.Request.Body = io.NopCloser(bytes.NewBuffer(c.Body))
+
+	if err := c.Request.ParseForm(); err != nil {
+		return err
+	}
+	values := c.Request.PostForm
+	return mapForm(obj, values)
+}
+
+// ShouldBindMultipartForm binds multipart form data into the provided object.
+func (c *Ctx[V]) ShouldBindMultipartForm(obj interface{}) error {
+	// Reset Request.Body
+	c.Request.Body = io.NopCloser(bytes.NewBuffer(c.Body))
+
+	if err := c.Request.ParseMultipartForm(32 << 20); err != nil {
+		return err
+	}
+	values := c.Request.MultipartForm.Value
+	return mapForm(obj, values)
+}
+
+// mapForm maps form values into the provided struct.
+func mapForm(ptr interface{}, formData url.Values) error {
+	return formDecoder.Decode(ptr, formData)
+}
+
+// ShouldBind binds the request body into the provided object
+// according to the Content-Type header.
+func (c *Ctx[V]) ShouldBind(obj interface{}) error {
+	contentType := c.GetHeader("Content-Type")
+	contentType, _, _ = mime.ParseMediaType(contentType)
+
+	switch contentType {
+	case "application/json":
+		return c.ShouldBindJSON(obj)
+	case "application/xml", "text/xml":
+		return c.ShouldBindXML(obj)
+	case "application/x-www-form-urlencoded":
+		return c.ShouldBindForm(obj)
+	case "multipart/form-data":
+		return c.ShouldBindMultipartForm(obj)
+	default:
+		return errors.New("unsupported content type: " + contentType)
+	}
 }
