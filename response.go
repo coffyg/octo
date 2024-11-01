@@ -85,6 +85,10 @@ func (c *Ctx[V]) SendErrorStatus(statusCode int, code string, err error) {
 	c.SendJSON(statusCode, result)
 }
 
+func (c *Ctx[V]) Redirect(status int, url string) {
+	http.Redirect(c.ResponseWriter, c.Request, url, status)
+}
+
 // Send404 sends a 404 Not Found error response
 func (c *Ctx[V]) Send404() {
 	c.SendError("err_not_found", nil)
