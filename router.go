@@ -568,15 +568,18 @@ func RecoveryMiddleware[V any]() MiddlewareFunc[V] {
 		return func(ctx *Ctx[V]) {
 			defer func() {
 				if err := recover(); err != nil {
-					// reset response writer
-					// Log the error details along with stack trace
+					stack := debug.Stack()
+
+					// Enhanced log formatting for readability
+					formattedStack := formatStackTrace(stack)
+
 					if logger != nil {
 						logger.Error().
 							Interface("error", err).
-							Str("stack", string(debug.Stack())).
-							Msgf("[octo-panic] panic recovered: %v", err)
+							Str("stack", formattedStack).
+							Msgf("[octo-panic] Panic recovered: %v", err)
 					} else {
-						fmt.Printf("[octo-panic] panic recovered: %v\n", err)
+						fmt.Printf("[octo-panic] Panic recovered: %v\nStack trace:\n%s\n", err, formattedStack)
 					}
 
 					// Return a standard error response
@@ -588,4 +591,16 @@ func RecoveryMiddleware[V any]() MiddlewareFunc[V] {
 			next(ctx)
 		}
 	}
+}
+
+// Helper function to format stack trace for better readability
+func formatStackTrace(stack []byte) string {
+	stackLines := strings.Split(string(stack), "\n")
+	var formattedStack strings.Builder
+	for _, line := range stackLines {
+		if strings.TrimSpace(line) != "" {
+			formattedStack.WriteString("\t" + line + "\n")
+		}
+	}
+	return formattedStack.String()
 }
