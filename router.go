@@ -92,6 +92,10 @@ type Group[V any] struct {
 	middleware []MiddlewareFunc[V]
 }
 
+func (g *Group[V]) Use(mw MiddlewareFunc[V]) {
+	g.middleware = append(g.middleware, mw)
+}
+
 // Group creates a new route group with the given prefix and middleware
 func (r *Router[V]) Group(prefix string, middleware ...MiddlewareFunc[V]) *Group[V] {
 	current := r.root
@@ -101,7 +105,6 @@ func (r *Router[V]) Group(prefix string, middleware ...MiddlewareFunc[V]) *Group
 			continue
 		}
 		if part[0] == ':' || strings.Contains(part, ":") {
-			// Handle embedded parameter in group prefix
 			current = r.addEmbeddedParameterNode(current, part)
 		} else {
 			if current.staticChildren == nil {
@@ -112,10 +115,7 @@ func (r *Router[V]) Group(prefix string, middleware ...MiddlewareFunc[V]) *Group
 			}
 			current = current.staticChildren[part]
 		}
-		// Assign middleware to current node
-		if len(middleware) > 0 {
-			current.middleware = append(current.middleware, middleware...)
-		}
+		// No middleware assignment to nodes
 	}
 	return &Group[V]{
 		prefix:     prefix,
@@ -127,43 +127,51 @@ func (r *Router[V]) Group(prefix string, middleware ...MiddlewareFunc[V]) *Group
 // Methods to add routes to the group
 func (g *Group[V]) GET(path string, handler HandlerFunc[V], middleware ...MiddlewareFunc[V]) {
 	fullPath := g.prefix + path
-	g.router.GET(fullPath, handler, middleware...)
+	allMiddleware := append(g.middleware, middleware...)
+	g.router.GET(fullPath, handler, allMiddleware...)
 }
 
 func (g *Group[V]) POST(path string, handler HandlerFunc[V], middleware ...MiddlewareFunc[V]) {
 	fullPath := g.prefix + path
-	g.router.POST(fullPath, handler, middleware...)
+	allMiddleware := append(g.middleware, middleware...)
+	g.router.POST(fullPath, handler, allMiddleware...)
 }
 
 func (g *Group[V]) PUT(path string, handler HandlerFunc[V], middleware ...MiddlewareFunc[V]) {
 	fullPath := g.prefix + path
-	g.router.PUT(fullPath, handler, middleware...)
+	allMiddleware := append(g.middleware, middleware...)
+	g.router.PUT(fullPath, handler, allMiddleware...)
 }
 
 func (g *Group[V]) DELETE(path string, handler HandlerFunc[V], middleware ...MiddlewareFunc[V]) {
 	fullPath := g.prefix + path
-	g.router.DELETE(fullPath, handler, middleware...)
+	allMiddleware := append(g.middleware, middleware...)
+	g.router.DELETE(fullPath, handler, allMiddleware...)
 }
 
 func (g *Group[V]) PATCH(path string, handler HandlerFunc[V], middleware ...MiddlewareFunc[V]) {
 	fullPath := g.prefix + path
-	g.router.PATCH(fullPath, handler, middleware...)
+	allMiddleware := append(g.middleware, middleware...)
+	g.router.PATCH(fullPath, handler, allMiddleware...)
 }
 
 func (g *Group[V]) OPTIONS(path string, handler HandlerFunc[V], middleware ...MiddlewareFunc[V]) {
 	fullPath := g.prefix + path
-	g.router.OPTIONS(fullPath, handler, middleware...)
+	allMiddleware := append(g.middleware, middleware...)
+	g.router.OPTIONS(fullPath, handler, allMiddleware...)
 }
 
 func (g *Group[V]) HEAD(path string, handler HandlerFunc[V], middleware ...MiddlewareFunc[V]) {
 	fullPath := g.prefix + path
-	g.router.HEAD(fullPath, handler, middleware...)
+	allMiddleware := append(g.middleware, middleware...)
+	g.router.HEAD(fullPath, handler, allMiddleware...)
 }
 
 // ANY adds a route that matches all HTTP methods
 func (g *Group[V]) ANY(path string, handler HandlerFunc[V], middleware ...MiddlewareFunc[V]) {
 	fullPath := g.prefix + path
-	g.router.ANY(fullPath, handler, middleware...)
+	allMiddleware := append(g.middleware, middleware...)
+	g.router.ANY(fullPath, handler, allMiddleware...)
 }
 
 // addRoute adds a route with associated handler and middleware
