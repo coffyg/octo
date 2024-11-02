@@ -1,1 +1,1 @@
-# Lazy HTTP Simple HTTP Framework
+# Lazy Simple HTTP Framework
