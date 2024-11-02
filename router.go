@@ -3,7 +3,6 @@ package octo
 import (
 	"fmt"
 	"net/http"
-	"reflect"
 	"strings"
 	"time"
 
@@ -15,6 +14,7 @@ type MiddlewareFunc[V any] func(HandlerFunc[V]) HandlerFunc[V]
 type routeEntry[V any] struct {
 	handler    HandlerFunc[V]
 	paramNames []string
+	middleware []MiddlewareFunc[V]
 }
 type node[V any] struct {
 	staticChildren map[string]*node[V]
@@ -23,7 +23,9 @@ type node[V any] struct {
 	isLeaf         bool
 	handlers       map[string]*routeEntry[V]
 	middleware     []MiddlewareFunc[V]
+	parent         *node[V]
 }
+
 type Router[V any] struct {
 	root               *node[V]
 	middleware         []MiddlewareFunc[V]
@@ -99,7 +101,7 @@ func (r *Router[V]) Group(prefix string, middleware ...MiddlewareFunc[V]) *Group
 		}
 		if part[0] == ':' {
 			if current.paramChild == nil {
-				current.paramChild = &node[V]{}
+				current.paramChild = &node[V]{parent: current}
 			}
 			current = current.paramChild
 		} else {
@@ -107,13 +109,13 @@ func (r *Router[V]) Group(prefix string, middleware ...MiddlewareFunc[V]) *Group
 				current.staticChildren = make(map[string]*node[V])
 			}
 			if current.staticChildren[part] == nil {
-				current.staticChildren[part] = &node[V]{}
+				current.staticChildren[part] = &node[V]{parent: current}
 			}
 			current = current.staticChildren[part]
 		}
-		// Assign middleware to current node, avoiding duplicates
+		// Assign middleware to current node
 		if len(middleware) > 0 {
-			current.middleware = appendUniqueMiddleware(current.middleware, middleware...)
+			current.middleware = append(current.middleware, middleware...)
 		}
 	}
 	return &Group[V]{
@@ -180,14 +182,14 @@ func (r *Router[V]) addRoute(method, path string, handler HandlerFunc[V], middle
 			paramName := part[1:]
 			paramNames = append(paramNames, paramName)
 			if current.paramChild == nil {
-				current.paramChild = &node[V]{}
+				current.paramChild = &node[V]{parent: current}
 			}
 			current = current.paramChild
 		} else if part[0] == '*' {
 			paramName := part[1:]
 			paramNames = append(paramNames, paramName)
 			if current.wildcardChild == nil {
-				current.wildcardChild = &node[V]{}
+				current.wildcardChild = &node[V]{parent: current}
 			}
 			current = current.wildcardChild
 			// Wildcard must be at the end
@@ -200,7 +202,7 @@ func (r *Router[V]) addRoute(method, path string, handler HandlerFunc[V], middle
 				current.staticChildren = make(map[string]*node[V])
 			}
 			if current.staticChildren[part] == nil {
-				current.staticChildren[part] = &node[V]{}
+				current.staticChildren[part] = &node[V]{parent: current}
 			}
 			current = current.staticChildren[part]
 		}
@@ -215,22 +217,84 @@ func (r *Router[V]) addRoute(method, path string, handler HandlerFunc[V], middle
 	}
 
 	current.isLeaf = true
-	current.handlers[method] = &routeEntry[V]{handler: handler, paramNames: paramNames}
 
+	// Build the middleware chain
+	middlewareChain := r.buildMiddlewareChain(current, middleware)
+
+	current.handlers[method] = &routeEntry[V]{handler: handler, paramNames: paramNames, middleware: middlewareChain}
+
+	// Assign route-specific middleware to the node (optional)
 	if len(middleware) > 0 {
-		current.middleware = appendUniqueMiddleware(current.middleware, middleware...)
+		current.middleware = append(current.middleware, middleware...)
 	}
 }
 
-// splitPath splits the path into segments
+func (r *Router[V]) buildMiddlewareChain(current *node[V], routeMiddleware []MiddlewareFunc[V]) []MiddlewareFunc[V] {
+	var middlewareChain []MiddlewareFunc[V]
+	// Collect middleware from nodes
+	currentNode := current
+	var middlewareStack [][]MiddlewareFunc[V]
+	for currentNode != nil {
+		if len(currentNode.middleware) > 0 {
+			middlewareStack = append(middlewareStack, currentNode.middleware)
+		}
+		currentNode = currentNode.parent
+	}
+	// Add router's middleware
+	if len(r.middleware) > 0 {
+		middlewareStack = append(middlewareStack, r.middleware)
+	}
+	if len(r.preGroupMiddleware) > 0 {
+		middlewareStack = append(middlewareStack, r.preGroupMiddleware)
+	}
+	// Flatten the middleware stack in the correct order
+	for i := len(middlewareStack) - 1; i >= 0; i-- {
+		middlewareChain = append(middlewareChain, middlewareStack[i]...)
+	}
+	// Add route-specific middleware
+	if len(routeMiddleware) > 0 {
+		middlewareChain = append(middlewareChain, routeMiddleware...)
+	}
+	return middlewareChain
+}
+
+func (r *Router[V]) globalMiddlewareChain() []MiddlewareFunc[V] {
+	var middlewareChain []MiddlewareFunc[V]
+	if len(r.preGroupMiddleware) > 0 {
+		middlewareChain = append(middlewareChain, r.preGroupMiddleware...)
+	}
+	if len(r.middleware) > 0 {
+		middlewareChain = append(middlewareChain, r.middleware...)
+	}
+	return middlewareChain
+}
+
+// splitPath splits the path into segments without allocating unnecessary memory
 func splitPath(path string) []string {
 	if path == "" || path == "/" {
-		return []string{}
+		return nil
 	}
 	if path[0] == '/' {
 		path = path[1:]
 	}
-	return strings.Split(path, "/")
+	// Count segments to preallocate slice
+	segmentCount := 1
+	for i := 0; i < len(path); i++ {
+		if path[i] == '/' {
+			segmentCount++
+		}
+	}
+	parts := make([]string, 0, segmentCount)
+	start := 0
+	for i := 0; i <= len(path); i++ {
+		if i == len(path) || path[i] == '/' {
+			if start < i {
+				parts = append(parts, path[start:i])
+			}
+			start = i + 1
+		}
+	}
+	return parts
 }
 
 // search finds the handler and middleware chain for a given request
@@ -238,14 +302,9 @@ func (r *Router[V]) search(method, path string) (HandlerFunc[V], []MiddlewareFun
 	parts := splitPath(path)
 	current := r.root
 
-	var middlewareChain []MiddlewareFunc[V]
 	var paramsValues []string
 
 	for i, part := range parts {
-		if len(current.middleware) > 0 {
-			middlewareChain = append(middlewareChain, current.middleware...)
-		}
-
 		if child, ok := current.staticChildren[part]; ok {
 			current = child
 			continue
@@ -262,18 +321,11 @@ func (r *Router[V]) search(method, path string) (HandlerFunc[V], []MiddlewareFun
 			remainingParts := strings.Join(parts[i:], "/")
 			paramsValues = append(paramsValues, remainingParts)
 			current = current.wildcardChild
-			if len(current.middleware) > 0 {
-				middlewareChain = append(middlewareChain, current.middleware...)
-			}
 			break
 		}
 
 		// No matching child
 		return nil, nil, nil, false
-	}
-
-	if len(current.middleware) > 0 {
-		middlewareChain = append(middlewareChain, current.middleware...)
 	}
 
 	handlerEntry, ok := current.handlers[method]
@@ -282,17 +334,20 @@ func (r *Router[V]) search(method, path string) (HandlerFunc[V], []MiddlewareFun
 	}
 
 	// Build the params map
-	params := make(map[string]string)
-	for i, paramName := range handlerEntry.paramNames {
-		if i < len(paramsValues) {
-			params[paramName] = paramsValues[i]
+	var params map[string]string
+	if len(handlerEntry.paramNames) > 0 {
+		params = make(map[string]string, len(handlerEntry.paramNames))
+		for i, paramName := range handlerEntry.paramNames {
+			if i < len(paramsValues) {
+				params[paramName] = paramsValues[i]
+			}
 		}
 	}
 
-	return handlerEntry.handler, middlewareChain, params, true
+	return handlerEntry.handler, handlerEntry.middleware, params, true
 }
 
-// applyMiddleware wraps the handler with middleware functions
+// wrapMiddleware ensures that middleware checks ctx.done before proceeding
 func wrapMiddleware[V any](mw MiddlewareFunc[V]) MiddlewareFunc[V] {
 	return func(next HandlerFunc[V]) HandlerFunc[V] {
 		return func(ctx *Ctx[V]) {
@@ -304,6 +359,7 @@ func wrapMiddleware[V any](mw MiddlewareFunc[V]) MiddlewareFunc[V] {
 	}
 }
 
+// wrapHandler ensures that the handler checks ctx.done before proceeding
 func wrapHandler[V any](handler HandlerFunc[V]) HandlerFunc[V] {
 	return func(ctx *Ctx[V]) {
 		if ctx.done {
@@ -313,10 +369,9 @@ func wrapHandler[V any](handler HandlerFunc[V]) HandlerFunc[V] {
 	}
 }
 
+// applyMiddleware wraps the handler with middleware functions
 func applyMiddleware[V any](handler HandlerFunc[V], middleware []MiddlewareFunc[V]) HandlerFunc[V] {
-	// Wrap the handler
 	handler = wrapHandler(handler)
-	// Wrap and apply middleware
 	for i := len(middleware) - 1; i >= 0; i-- {
 		mw := wrapMiddleware(middleware[i])
 		handler = mw(handler)
@@ -331,10 +386,6 @@ func (r *Router[V]) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
 	handler, middlewareChain, params, ok := r.search(method, path)
 
-	// Combine middleware in the correct order
-	allMiddleware := append(r.preGroupMiddleware, r.middleware...)
-	allMiddleware = append(allMiddleware, middlewareChain...)
-
 	if !ok {
 		// Route not found, define a default handler
 		handler = func(ctx *Ctx[V]) {
@@ -345,6 +396,8 @@ func (r *Router[V]) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			}
 			http.NotFound(ctx.ResponseWriter, ctx.Request)
 		}
+		// Build middleware chain for 404 handler
+		middlewareChain = r.globalMiddlewareChain()
 	}
 
 	ctx := &Ctx[V]{
@@ -352,27 +405,11 @@ func (r *Router[V]) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		Request:        req,
 		Params:         params,
 		StartTime:      time.Now().UnixNano(),
-		UUID:           uuid.New().String(),
+		UUID:           uuid.NewString(),
 		Query:          req.URL.Query(),
 	}
 
-	handler = applyMiddleware(handler, allMiddleware)
+	handler = applyMiddleware(handler, middlewareChain)
 
 	handler(ctx)
-}
-
-// appendUniqueMiddleware appends middleware functions to a slice, avoiding duplicates
-func appendUniqueMiddleware[V any](existing []MiddlewareFunc[V], newMiddleware ...MiddlewareFunc[V]) []MiddlewareFunc[V] {
-	existingSet := make(map[uintptr]struct{}, len(existing))
-	for _, emw := range existing {
-		existingSet[reflect.ValueOf(emw).Pointer()] = struct{}{}
-	}
-	for _, nmw := range newMiddleware {
-		ptr := reflect.ValueOf(nmw).Pointer()
-		if _, found := existingSet[ptr]; !found {
-			existing = append(existing, nmw)
-			existingSet[ptr] = struct{}{}
-		}
-	}
-	return existing
 }
