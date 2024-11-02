@@ -234,3 +234,50 @@ func TestRouteGroups(t *testing.T) {
 		t.Errorf("Expected group middleware not to be called")
 	}
 }
+
+func TestWildcardRoute(t *testing.T) {
+	router := NewRouter[CustomData]()
+
+	// Handler for wildcard route
+	router.GET("/files/*filepath", func(ctx *Ctx[CustomData]) {
+		filepath := ctx.Params["filepath"]
+		ctx.ResponseWriter.Write([]byte("Filepath: " + filepath))
+	})
+
+	// Test wildcard route
+	req := httptest.NewRequest("GET", "/files/images/logo.png", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	resp := w.Result()
+	body, _ := io.ReadAll(resp.Body)
+
+	expectedBody := "Filepath: images/logo.png"
+	if string(body) != expectedBody {
+		t.Errorf("Expected '%s', got '%s'", expectedBody, string(body))
+	}
+}
+
+func TestComplexParameterRoute(t *testing.T) {
+	router := NewRouter[CustomData]()
+
+	// Handler for complex parameter route
+	router.GET("/public/Thread/:uuid/v/:version", func(ctx *Ctx[CustomData]) {
+		uuid := ctx.Params["uuid"]
+		version := ctx.Params["version"]
+		ctx.ResponseWriter.Write([]byte("UUID: " + uuid + ", Version: " + version))
+	})
+
+	// Test complex parameter route
+	req := httptest.NewRequest("GET", "/public/Thread/123e4567-e89b-12d3-a456-426614174000/v/2", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	resp := w.Result()
+	body, _ := io.ReadAll(resp.Body)
+
+	expectedBody := "UUID: 123e4567-e89b-12d3-a456-426614174000, Version: 2"
+	if string(body) != expectedBody {
+		t.Errorf("Expected '%s', got '%s'", expectedBody, string(body))
+	}
+}

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"reflect"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -18,6 +19,7 @@ type routeEntry[V any] struct {
 type node[V any] struct {
 	staticChildren map[string]*node[V]
 	paramChild     *node[V]
+	wildcardChild  *node[V]
 	isLeaf         bool
 	handlers       map[string]*routeEntry[V]
 	middleware     []MiddlewareFunc[V]
@@ -170,7 +172,7 @@ func (r *Router[V]) addRoute(method, path string, handler HandlerFunc[V], middle
 
 	var paramNames []string
 
-	for _, part := range parts {
+	for i, part := range parts {
 		if part == "" {
 			continue
 		}
@@ -181,6 +183,18 @@ func (r *Router[V]) addRoute(method, path string, handler HandlerFunc[V], middle
 				current.paramChild = &node[V]{}
 			}
 			current = current.paramChild
+		} else if part[0] == '*' {
+			paramName := part[1:]
+			paramNames = append(paramNames, paramName)
+			if current.wildcardChild == nil {
+				current.wildcardChild = &node[V]{}
+			}
+			current = current.wildcardChild
+			// Wildcard must be at the end
+			if i != len(parts)-1 {
+				panic("Wildcard route parameter must be at the end of the path")
+			}
+			break
 		} else {
 			if current.staticChildren == nil {
 				current.staticChildren = make(map[string]*node[V])
@@ -210,36 +224,13 @@ func (r *Router[V]) addRoute(method, path string, handler HandlerFunc[V], middle
 
 // splitPath splits the path into segments
 func splitPath(path string) []string {
-	parts := make([]string, 0, 10)
-	start := 0
-	i := 0
-	for i < len(path) {
-		// Skip consecutive delimiters
-		for i < len(path) && path[i] == '/' {
-			i++
-		}
-		start = i
-		// Find the next delimiter or parameter
-		for i < len(path) && path[i] != '/' && path[i] != ':' {
-			i++
-		}
-		if start < i {
-			parts = append(parts, path[start:i])
-		}
-		// Handle parameter delimiter ':'
-		if i < len(path) && path[i] == ':' {
-			i++ // Skip ':'
-			paramStart := i
-			// Read the parameter name
-			for i < len(path) && path[i] != '/' && path[i] != ':' {
-				i++
-			}
-			if paramStart < i {
-				parts = append(parts, ":"+path[paramStart:i])
-			}
-		}
+	if path == "" || path == "/" {
+		return []string{}
 	}
-	return parts
+	if path[0] == '/' {
+		path = path[1:]
+	}
+	return strings.Split(path, "/")
 }
 
 // search finds the handler and middleware chain for a given request
@@ -250,25 +241,39 @@ func (r *Router[V]) search(method, path string) (HandlerFunc[V], []MiddlewareFun
 	var middlewareChain []MiddlewareFunc[V]
 	var paramsValues []string
 
-	for _, part := range parts {
-		if current.staticChildren != nil {
-			if child, ok := current.staticChildren[part]; ok {
-				current = child
-				if len(current.middleware) > 0 {
-					middlewareChain = append(middlewareChain, current.middleware...)
-				}
-				continue
-			}
+	for i, part := range parts {
+		if len(current.middleware) > 0 {
+			middlewareChain = append(middlewareChain, current.middleware...)
 		}
+
+		if child, ok := current.staticChildren[part]; ok {
+			current = child
+			continue
+		}
+
 		if current.paramChild != nil {
-			current = current.paramChild
 			paramsValues = append(paramsValues, part)
+			current = current.paramChild
+			continue
+		}
+
+		if current.wildcardChild != nil {
+			// Remaining parts are matched to wildcard parameter
+			remainingParts := strings.Join(parts[i:], "/")
+			paramsValues = append(paramsValues, remainingParts)
+			current = current.wildcardChild
 			if len(current.middleware) > 0 {
 				middlewareChain = append(middlewareChain, current.middleware...)
 			}
-		} else {
-			return nil, nil, nil, false
+			break
 		}
+
+		// No matching child
+		return nil, nil, nil, false
+	}
+
+	if len(current.middleware) > 0 {
+		middlewareChain = append(middlewareChain, current.middleware...)
 	}
 
 	handlerEntry, ok := current.handlers[method]
@@ -288,7 +293,6 @@ func (r *Router[V]) search(method, path string) (HandlerFunc[V], []MiddlewareFun
 }
 
 // applyMiddleware wraps the handler with middleware functions
-
 func wrapMiddleware[V any](mw MiddlewareFunc[V]) MiddlewareFunc[V] {
 	return func(next HandlerFunc[V]) HandlerFunc[V] {
 		return func(ctx *Ctx[V]) {
