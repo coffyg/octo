@@ -11,16 +11,17 @@ import (
 
 type HandlerFunc[V any] func(*Ctx[V])
 type MiddlewareFunc[V any] func(HandlerFunc[V]) HandlerFunc[V]
-
+type routeEntry[V any] struct {
+	handler    HandlerFunc[V]
+	paramNames []string
+}
 type node[V any] struct {
-	staticChildren map[string]*node[V] // Static path segments
-	paramChild     *node[V]            // Parameterized path segment
-	paramName      string              // Name of the path parameter
-	isLeaf         bool                // Indicates if the node is a leaf
-	handlers       map[string]HandlerFunc[V]
+	staticChildren map[string]*node[V]
+	paramChild     *node[V]
+	isLeaf         bool
+	handlers       map[string]*routeEntry[V]
 	middleware     []MiddlewareFunc[V]
 }
-
 type Router[V any] struct {
 	root               *node[V]
 	middleware         []MiddlewareFunc[V]
@@ -95,10 +96,8 @@ func (r *Router[V]) Group(prefix string, middleware ...MiddlewareFunc[V]) *Group
 			continue
 		}
 		if part[0] == ':' {
-			paramName := part[1:]
 			if current.paramChild == nil {
 				current.paramChild = &node[V]{}
-				current.paramChild.paramName = paramName
 			}
 			current = current.paramChild
 		} else {
@@ -169,17 +168,17 @@ func (r *Router[V]) addRoute(method, path string, handler HandlerFunc[V], middle
 	parts := splitPath(path)
 	current := r.root
 
+	var paramNames []string
+
 	for _, part := range parts {
 		if part == "" {
 			continue
 		}
 		if part[0] == ':' {
 			paramName := part[1:]
+			paramNames = append(paramNames, paramName)
 			if current.paramChild == nil {
 				current.paramChild = &node[V]{}
-				current.paramChild.paramName = paramName
-			} else if current.paramChild.paramName != paramName {
-				panic(fmt.Sprintf("conflicting parameter name: %s (path: %s, method: %s)", part, path, method))
 			}
 			current = current.paramChild
 		} else {
@@ -194,7 +193,7 @@ func (r *Router[V]) addRoute(method, path string, handler HandlerFunc[V], middle
 	}
 
 	if current.handlers == nil {
-		current.handlers = make(map[string]HandlerFunc[V])
+		current.handlers = make(map[string]*routeEntry[V])
 	}
 
 	if _, exists := current.handlers[method]; exists {
@@ -202,7 +201,7 @@ func (r *Router[V]) addRoute(method, path string, handler HandlerFunc[V], middle
 	}
 
 	current.isLeaf = true
-	current.handlers[method] = handler
+	current.handlers[method] = &routeEntry[V]{handler: handler, paramNames: paramNames}
 
 	if len(middleware) > 0 {
 		current.middleware = appendUniqueMiddleware(current.middleware, middleware...)
@@ -244,11 +243,12 @@ func splitPath(path string) []string {
 }
 
 // search finds the handler and middleware chain for a given request
-func (r *Router[V]) search(method, path string, params map[string]string) (HandlerFunc[V], []MiddlewareFunc[V], bool) {
+func (r *Router[V]) search(method, path string) (HandlerFunc[V], []MiddlewareFunc[V], map[string]string, bool) {
 	parts := splitPath(path)
 	current := r.root
 
 	var middlewareChain []MiddlewareFunc[V]
+	var paramsValues []string
 
 	for _, part := range parts {
 		if current.staticChildren != nil {
@@ -262,17 +262,29 @@ func (r *Router[V]) search(method, path string, params map[string]string) (Handl
 		}
 		if current.paramChild != nil {
 			current = current.paramChild
-			params[current.paramName] = part
+			paramsValues = append(paramsValues, part)
 			if len(current.middleware) > 0 {
 				middlewareChain = append(middlewareChain, current.middleware...)
 			}
 		} else {
-			return nil, nil, false
+			return nil, nil, nil, false
 		}
 	}
 
-	handler, ok := current.handlers[method]
-	return handler, middlewareChain, ok && current.isLeaf
+	handlerEntry, ok := current.handlers[method]
+	if !ok || !current.isLeaf {
+		return nil, nil, nil, false
+	}
+
+	// Build the params map
+	params := make(map[string]string)
+	for i, paramName := range handlerEntry.paramNames {
+		if i < len(paramsValues) {
+			params[paramName] = paramsValues[i]
+		}
+	}
+
+	return handlerEntry.handler, middlewareChain, params, true
 }
 
 // applyMiddleware wraps the handler with middleware functions
@@ -313,11 +325,9 @@ func (r *Router[V]) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	path := req.URL.Path
 	method := req.Method
 
-	params := make(map[string]string)
-	handler, middlewareChain, ok := r.search(method, path, params)
+	handler, middlewareChain, params, ok := r.search(method, path)
 
 	// Combine middleware in the correct order
-	// preGroupMiddleware -> global middleware -> route-specific middleware
 	allMiddleware := append(r.preGroupMiddleware, r.middleware...)
 	allMiddleware = append(allMiddleware, middlewareChain...)
 
