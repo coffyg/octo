@@ -5,8 +5,11 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"reflect"
 	"testing"
+
+	"github.com/rs/zerolog"
 )
 
 // Custom data type for Ctx.Custom
@@ -100,6 +103,8 @@ func TestRouter(t *testing.T) {
 }
 
 func TestMiddleware(t *testing.T) {
+	logger := zerolog.New(os.Stderr).With().Timestamp().Logger()
+	SetupOctoLogger(&logger)
 	router := NewRouter[CustomData]()
 
 	// Add global middleware
@@ -373,4 +378,30 @@ func TestUseGlobalMiddlewareWithoutDone(t *testing.T) {
 	if resp.StatusCode != http.StatusNotFound {
 		t.Errorf("Expected status 404, got %d", resp.StatusCode)
 	}
+}
+func TestRouter_PanicRecovery(t *testing.T) {
+	router := NewRouter[CustomData]()
+
+	// Add Recovery Middleware
+	router.UseGlobal(RecoveryMiddleware[CustomData]())
+
+	// Define a route that panics
+	router.GET("/panic", func(ctx *Ctx[CustomData]) {
+		panic("test panic")
+	})
+
+	// Send a request to the panic route
+	req := httptest.NewRequest("GET", "/panic", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	// Check the response
+	resp := w.Result()
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Errorf("Expected status 500, got %d", resp.StatusCode)
+	}
+
+	// Optionally, check the response body for the standardized error message
+	// For example, expecting JSON with "result": "error" and "message": "Internal error"
+	// You can decode the JSON and assert the fields accordingly
 }

@@ -3,6 +3,7 @@ package octo
 import (
 	"fmt"
 	"net/http"
+	"runtime/debug"
 	"strings"
 	"time"
 
@@ -560,4 +561,31 @@ func (r *Router[V]) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	handler = applyMiddleware(handler, middlewareChain)
 
 	handler(ctx)
+}
+
+func RecoveryMiddleware[V any]() MiddlewareFunc[V] {
+	return func(next HandlerFunc[V]) HandlerFunc[V] {
+		return func(ctx *Ctx[V]) {
+			defer func() {
+				if err := recover(); err != nil {
+					// reset response writer
+					// Log the error details along with stack trace
+					if logger != nil {
+						logger.Error().
+							Interface("error", err).
+							Str("stack", string(debug.Stack())).
+							Msgf("[octo-panic] panic recovered: %v", err)
+					} else {
+						fmt.Printf("[octo-panic] panic recovered: %v\n", err)
+					}
+
+					// Return a standard error response
+					ctx.SendError("err_internal_error", fmt.Errorf("%v", err))
+				}
+			}()
+
+			// Proceed to the next handler
+			next(ctx)
+		}
+	}
 }
