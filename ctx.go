@@ -3,6 +3,7 @@ package octo
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"encoding/xml"
 	"errors"
 	"io"
@@ -61,7 +62,8 @@ func (c *Ctx[V]) JSON(statusCode int, v interface{}) {
 
 func (c *Ctx[V]) SendJSON(statusCode int, v interface{}) {
 	c.SetHeader("Content-Type", "application/json")
-	response, err := sonic.Marshal(v)
+
+	response, err := json.Marshal(v)
 	if err != nil {
 		c.SetStatus(http.StatusInternalServerError)
 		c.ResponseWriter.Write([]byte("error encoding response: " + err.Error()))
