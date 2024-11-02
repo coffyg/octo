@@ -156,6 +156,15 @@ func (c *Ctx[V]) Cookie(name string) (string, error) {
 
 // SetCookie adds a Set-Cookie header to the response.
 func (c *Ctx[V]) SetCookie(name, value string, maxAge int, path, domain string, secure, httpOnly bool) {
+	if maxAge <= 0 {
+		maxAge = -1
+	}
+	if path == "" {
+		path = "/"
+	}
+	if domain == "" {
+		domain = c.Request.URL.Hostname()
+	}
 	http.SetCookie(c.ResponseWriter, &http.Cookie{
 		Name:     name,
 		Value:    value,
