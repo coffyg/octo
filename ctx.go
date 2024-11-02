@@ -258,7 +258,7 @@ func (c *Ctx[V]) NeedBody() error {
 		logger.Error().Err(err).Msg("[octo] failed to read request body")
 		return err
 	}
-
+	c.Request.Body = io.NopCloser(bytes.NewBuffer(body))
 	c.Body = body
 	c.hasReadBody = true
 	return nil
