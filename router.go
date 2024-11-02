@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"net/http"
 	"reflect"
-	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -212,11 +211,35 @@ func (r *Router[V]) addRoute(method, path string, handler HandlerFunc[V], middle
 
 // splitPath splits the path into segments
 func splitPath(path string) []string {
-	if path == "" || path == "/" {
-		return []string{}
+	parts := make([]string, 0, 10)
+	start := 0
+	i := 0
+	for i < len(path) {
+		// Skip consecutive delimiters
+		for i < len(path) && path[i] == '/' {
+			i++
+		}
+		start = i
+		// Find the next delimiter or parameter
+		for i < len(path) && path[i] != '/' && path[i] != ':' {
+			i++
+		}
+		if start < i {
+			parts = append(parts, path[start:i])
+		}
+		// Handle parameter delimiter ':'
+		if i < len(path) && path[i] == ':' {
+			i++ // Skip ':'
+			paramStart := i
+			// Read the parameter name
+			for i < len(path) && path[i] != '/' && path[i] != ':' {
+				i++
+			}
+			if paramStart < i {
+				parts = append(parts, ":"+path[paramStart:i])
+			}
+		}
 	}
-	path = strings.Trim(path, "/")
-	parts := strings.Split(path, "/")
 	return parts
 }
 
