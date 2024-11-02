@@ -179,7 +179,7 @@ func (r *Router[V]) addRoute(method, path string, handler HandlerFunc[V], middle
 				current.paramChild = &node[V]{}
 				current.paramChild.paramName = paramName
 			} else if current.paramChild.paramName != paramName {
-				panic(fmt.Sprintf("conflicting parameter name: %s", part))
+				panic(fmt.Sprintf("conflicting parameter name: %s (path: %s, method: %s)", part, path, method))
 			}
 			current = current.paramChild
 		} else {
