@@ -1,6 +1,7 @@
 package octo
 
 import (
+	"fmt"
 	"net/http"
 	"runtime"
 	"time"
@@ -124,10 +125,19 @@ func (c *Ctx[V]) SendData(statusCode int, contentType string, data []byte) {
 
 // Send a file as response
 func (c *Ctx[V]) File(urlPath string, filePath string) {
+	if filePath == "" {
+		c.SendError("err_internal_error", fmt.Errorf("file path is empty"))
+		return
+	}
+
 	http.ServeFile(c.ResponseWriter, c.Request, filePath)
 }
 
 // Send a file as response from a http.FileSystem
 func (c *Ctx[V]) FileFromFS(urlPath string, fs http.FileSystem, filePath string) {
+	if fs == nil {
+		c.SendError("err_internal_error", fmt.Errorf("http.FileSystem is nil"))
+		return
+	}
 	http.FileServer(fs).ServeHTTP(c.ResponseWriter, c.Request)
 }

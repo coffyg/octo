@@ -2,10 +2,10 @@ package octo
 
 import (
 	"fmt"
-	"io"
 	"net/http"
+	"reflect"
+	"strings"
 	"time"
-	"unsafe"
 
 	"github.com/google/uuid"
 )
@@ -212,35 +212,11 @@ func (r *Router[V]) addRoute(method, path string, handler HandlerFunc[V], middle
 
 // splitPath splits the path into segments
 func splitPath(path string) []string {
-	parts := make([]string, 0, 10)
-	start := 0
-	i := 0
-	for i < len(path) {
-		// Skip consecutive delimiters
-		for i < len(path) && path[i] == '/' {
-			i++
-		}
-		start = i
-		// Find the next delimiter or parameter
-		for i < len(path) && path[i] != '/' && path[i] != ':' {
-			i++
-		}
-		if start < i {
-			parts = append(parts, path[start:i])
-		}
-		// Handle parameter delimiter ':'
-		if i < len(path) && path[i] == ':' {
-			i++ // Skip ':'
-			paramStart := i
-			// Read the parameter name
-			for i < len(path) && path[i] != '/' && path[i] != ':' {
-				i++
-			}
-			if paramStart < i {
-				parts = append(parts, ":"+path[paramStart:i])
-			}
-		}
+	if path == "" || path == "/" {
+		return []string{}
 	}
+	path = strings.Trim(path, "/")
+	parts := strings.Split(path, "/")
 	return parts
 }
 
@@ -309,10 +285,6 @@ func applyMiddleware[V any](handler HandlerFunc[V], middleware []MiddlewareFunc[
 	return handler
 }
 
-func hasBodyIf(method string) bool {
-	return method == "POST" || method == "PUT" || method == "PATCH" || method == "DELETE"
-}
-
 // ServeHTTP implements the http.Handler interface
 func (r *Router[V]) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	path := req.URL.Path
@@ -338,23 +310,12 @@ func (r *Router[V]) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		}
 	}
 
-	var body []byte
-	if hasBodyIf(method) {
-		var err error
-		body, err = io.ReadAll(req.Body)
-		if err != nil {
-			http.Error(w, "Failed to read request body", http.StatusBadRequest)
-			return
-		}
-	}
-
 	ctx := &Ctx[V]{
 		ResponseWriter: w,
 		Request:        req,
 		Params:         params,
 		StartTime:      time.Now().UnixNano(),
 		UUID:           uuid.New().String(),
-		Body:           body,
 		Query:          req.URL.Query(),
 	}
 
@@ -367,18 +328,14 @@ func (r *Router[V]) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 func appendUniqueMiddleware[V any](existing []MiddlewareFunc[V], newMiddleware ...MiddlewareFunc[V]) []MiddlewareFunc[V] {
 	existingSet := make(map[uintptr]struct{}, len(existing))
 	for _, emw := range existing {
-		existingSet[funcPointer(emw)] = struct{}{}
+		existingSet[reflect.ValueOf(emw).Pointer()] = struct{}{}
 	}
 	for _, nmw := range newMiddleware {
-		ptr := funcPointer(nmw)
+		ptr := reflect.ValueOf(nmw).Pointer()
 		if _, found := existingSet[ptr]; !found {
 			existing = append(existing, nmw)
 			existingSet[ptr] = struct{}{}
 		}
 	}
 	return existing
-}
-
-func funcPointer[V any](f MiddlewareFunc[V]) uintptr {
-	return *(*uintptr)(unsafe.Pointer(&f))
 }

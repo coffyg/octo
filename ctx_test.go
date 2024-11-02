@@ -309,6 +309,7 @@ func TestRequestBody(t *testing.T) {
 	router := NewRouter[CustomData]()
 
 	router.POST("/body", func(ctx *Ctx[CustomData]) {
+		ctx.NeedBody()
 		ctx.ResponseWriter.Write(ctx.Body)
 	})
 

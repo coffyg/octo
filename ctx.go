@@ -28,7 +28,8 @@ type Ctx[V any] struct {
 	Body           []byte              `json:"-"`
 	Headers        http.Header         `json:"-"`
 	Custom         V                   // Generic Custom Field
-	done           bool                
+	done           bool
+	hasReadBody    bool
 }
 
 func (c *Ctx[V]) SetHeader(key, value string) {
@@ -60,7 +61,7 @@ func (c *Ctx[V]) SendJSON(statusCode int, v interface{}) {
 	response, err := sonic.Marshal(v)
 	if err != nil {
 		c.SetStatus(http.StatusInternalServerError)
-		c.ResponseWriter.Write([]byte(`"error encoding response: ` + err.Error() + `"`))
+		c.ResponseWriter.Write([]byte("error encoding response: " + err.Error()))
 		return
 	}
 	c.SetStatus(statusCode)
@@ -79,7 +80,8 @@ func (c *Ctx[V]) QueryParam(key string) string {
 	}
 	return ""
 }
-func (c *Ctx[v]) DefaultQueryParam(key, defaultValue string) string {
+
+func (c *Ctx[V]) DefaultQueryParam(key, defaultValue string) string {
 	// check if it's in params
 	if value, ok := c.Params[key]; ok {
 		return value
@@ -178,6 +180,7 @@ func (c *Ctx[V]) SetCookie(name, value string, maxAge int, path, domain string, 
 
 // BindJSON binds the request body into an interface.
 func (c *Ctx[V]) ShouldBindJSON(obj interface{}) error {
+	c.NeedBody()
 	if len(c.Body) == 0 {
 		return errors.New("request body is empty")
 	}
@@ -186,6 +189,7 @@ func (c *Ctx[V]) ShouldBindJSON(obj interface{}) error {
 
 // ShouldBindXML binds the XML request body into the provided object.
 func (c *Ctx[V]) ShouldBindXML(obj interface{}) error {
+	c.NeedBody()
 	if len(c.Body) == 0 {
 		return errors.New("request body is empty")
 	}
@@ -194,6 +198,7 @@ func (c *Ctx[V]) ShouldBindXML(obj interface{}) error {
 
 // ShouldBindForm binds form data into the provided object.
 func (c *Ctx[V]) ShouldBindForm(obj interface{}) error {
+	c.NeedBody()
 	// Reset Request.Body
 	c.Request.Body = io.NopCloser(bytes.NewBuffer(c.Body))
 
@@ -206,6 +211,7 @@ func (c *Ctx[V]) ShouldBindForm(obj interface{}) error {
 
 // ShouldBindMultipartForm binds multipart form data into the provided object.
 func (c *Ctx[V]) ShouldBindMultipartForm(obj interface{}) error {
+	c.NeedBody()
 	// Reset Request.Body
 	c.Request.Body = io.NopCloser(bytes.NewBuffer(c.Body))
 
@@ -239,4 +245,21 @@ func (c *Ctx[V]) ShouldBind(obj interface{}) error {
 	default:
 		return errors.New("unsupported content type: " + contentType)
 	}
+}
+
+func (c *Ctx[V]) NeedBody() error {
+	if c.hasReadBody {
+		return nil
+	}
+	var body []byte
+	var err error
+	body, err = io.ReadAll(c.Request.Body)
+	if err != nil {
+		logger.Error().Err(err).Msg("[octo] failed to read request body")
+		return err
+	}
+
+	c.Body = body
+	c.hasReadBody = true
+	return nil
 }
