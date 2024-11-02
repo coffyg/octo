@@ -55,6 +55,9 @@ func (c *Ctx[V]) SetParam(key, value string) {
 func (c *Ctx[V]) SetStatus(code int) {
 	c.ResponseWriter.WriteHeader(code)
 }
+func (c *Ctx[V]) JSON(statusCode int, v interface{}) {
+	c.SendJSON(statusCode, v)
+}
 
 func (c *Ctx[V]) SendJSON(statusCode int, v interface{}) {
 	c.SetHeader("Content-Type", "application/json")
@@ -66,6 +69,14 @@ func (c *Ctx[V]) SendJSON(statusCode int, v interface{}) {
 	}
 	c.SetStatus(statusCode)
 	c.ResponseWriter.Write(response)
+}
+
+func (c *Ctx[V]) Param(key string) string {
+	if value, ok := c.Params[key]; ok {
+		return value
+	}
+
+	return ""
 }
 
 func (c *Ctx[V]) QueryParam(key string) string {
