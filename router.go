@@ -549,15 +549,20 @@ func (r *Router[V]) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		middlewareChain = r.globalMiddlewareChain()
 	}
 
-	ctx := &Ctx[V]{
+	// Wrap the ResponseWriter with ResponseWriterWrapper
+	responseWriter := &ResponseWriterWrapper{
 		ResponseWriter: w,
+		status:         http.StatusOK, // default status code
+	}
+
+	ctx := &Ctx[V]{
+		ResponseWriter: responseWriter,
 		Request:        req,
 		Params:         params,
 		StartTime:      time.Now().UnixNano(),
 		UUID:           uuid.NewString(),
 		Query:          req.URL.Query(),
 	}
-
 	handler = applyMiddleware(handler, middlewareChain)
 
 	handler(ctx)

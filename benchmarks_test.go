@@ -1,7 +1,6 @@
 package octo
 
 import (
-	"compress/gzip"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -9,7 +8,6 @@ import (
 	"runtime/debug"
 	"runtime/pprof"
 	"strconv"
-	"strings"
 	"testing"
 	"time"
 )
@@ -286,19 +284,6 @@ func BenchmarkRouter_WithNetworkLatency(b *testing.B) {
 		resp.Body.Close()
 	}
 }
-func gzipMiddleware(next HandlerFunc[CustomData]) HandlerFunc[CustomData] {
-	return func(ctx *Ctx[CustomData]) {
-		if !strings.Contains(ctx.Request.Header.Get("Accept-Encoding"), "gzip") {
-			next(ctx)
-			return
-		}
-		gz := gzip.NewWriter(ctx.ResponseWriter)
-		defer gz.Close()
-		ctx.ResponseWriter.Header().Set("Content-Encoding", "gzip")
-		ctx.ResponseWriter = &gzipResponseWriter{Writer: gz, ResponseWriter: ctx.ResponseWriter}
-		next(ctx)
-	}
-}
 
 type gzipResponseWriter struct {
 	io.Writer
@@ -309,32 +294,6 @@ func (w *gzipResponseWriter) Write(b []byte) (int, error) {
 	return w.Writer.Write(b)
 }
 
-func BenchmarkRouter_WithGzipMiddleware(b *testing.B) {
-	b.ReportAllocs()
-	router := NewRouter[CustomData]()
-	router.Use(gzipMiddleware)
-
-	largeResponse := make([]byte, 10*1024*1024) // 10 MB
-	for i := range largeResponse {
-		largeResponse[i] = 'a'
-	}
-
-	router.GET("/gzip", func(ctx *Ctx[CustomData]) {
-		ctx.ResponseWriter.Write(largeResponse)
-	})
-
-	req := httptest.NewRequest("GET", "/gzip", nil)
-	req.Header.Set("Accept-Encoding", "gzip")
-
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		w := httptest.NewRecorder()
-		router.ServeHTTP(w, req)
-		resp := w.Result()
-		io.Copy(io.Discard, resp.Body)
-		resp.Body.Close()
-	}
-}
 func BenchmarkRouter_JSONResponse(b *testing.B) {
 	b.ReportAllocs()
 	router := NewRouter[CustomData]()

@@ -20,15 +20,15 @@ import (
 var formDecoder = form.NewDecoder()
 
 type Ctx[V any] struct {
-	ResponseWriter http.ResponseWriter `json:"-"`
-	Request        *http.Request       `json:"-"`
-	Params         map[string]string   `json:"Params"`
-	Query          map[string][]string `json:"Query"`
-	StartTime      int64               `json:"StartTime"`
-	UUID           string              `json:"UUID"`
-	Body           []byte              `json:"-"`
-	Headers        http.Header         `json:"-"`
-	Custom         V                   // Generic Custom Field
+	ResponseWriter *ResponseWriterWrapper `json:"-"`
+	Request        *http.Request          `json:"-"`
+	Params         map[string]string      `json:"Params"`
+	Query          map[string][]string    `json:"Query"`
+	StartTime      int64                  `json:"StartTime"`
+	UUID           string                 `json:"UUID"`
+	Body           []byte                 `json:"-"`
+	Headers        http.Header            `json:"-"`
+	Custom         V                      // Generic Custom Field
 	done           bool
 	hasReadBody    bool
 }
