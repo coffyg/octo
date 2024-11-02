@@ -269,3 +269,59 @@ func TestShouldBind(t *testing.T) {
 		t.Errorf("Unexpected response data: %+v", responseData)
 	}
 }
+func TestQueryParameters(t *testing.T) {
+	router := NewRouter[CustomData]()
+
+	router.GET("/query", func(ctx *Ctx[CustomData]) {
+		value := ctx.Query["key"]
+		if len(value) > 0 {
+			ctx.ResponseWriter.Write([]byte(value[0]))
+		} else {
+			ctx.ResponseWriter.Write([]byte("no key"))
+		}
+	})
+
+	req := httptest.NewRequest("GET", "/query?key=value", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	resp := w.Result()
+	body, _ := io.ReadAll(resp.Body)
+
+	if string(body) != "value" {
+		t.Errorf("Expected 'value', got '%s'", string(body))
+	}
+
+	// Test without query parameter
+	req = httptest.NewRequest("GET", "/query", nil)
+	w = httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	resp = w.Result()
+	body, _ = io.ReadAll(resp.Body)
+
+	if string(body) != "no key" {
+		t.Errorf("Expected 'no key', got '%s'", string(body))
+	}
+}
+
+func TestRequestBody(t *testing.T) {
+	router := NewRouter[CustomData]()
+
+	router.POST("/body", func(ctx *Ctx[CustomData]) {
+		ctx.ResponseWriter.Write(ctx.Body)
+	})
+
+	reqBody := []byte("request body")
+	req := httptest.NewRequest("POST", "/body", bytes.NewBuffer(reqBody))
+	req.Header.Set("Content-Length", "12")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	resp := w.Result()
+	body, _ := io.ReadAll(resp.Body)
+
+	if string(body) != "request body" {
+		t.Errorf("Expected 'request body', got '%s'", string(body))
+	}
+}

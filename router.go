@@ -355,12 +355,7 @@ func (r *Router[V]) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		StartTime:      time.Now().UnixNano(),
 		UUID:           uuid.New().String(),
 		Body:           body,
-		Query:          make(map[string]*[]string),
-	}
-
-	query := req.URL.Query()
-	for key, value := range query {
-		ctx.Query[key] = &value
+		Query:          req.URL.Query(),
 	}
 
 	handler = applyMiddleware(handler, allMiddleware)
