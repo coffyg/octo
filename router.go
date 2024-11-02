@@ -99,11 +99,9 @@ func (r *Router[V]) Group(prefix string, middleware ...MiddlewareFunc[V]) *Group
 		if part == "" {
 			continue
 		}
-		if part[0] == ':' {
-			if current.paramChild == nil {
-				current.paramChild = &node[V]{parent: current}
-			}
-			current = current.paramChild
+		if part[0] == ':' || strings.Contains(part, ":") {
+			// Handle embedded parameter in group prefix
+			current = r.addEmbeddedParameterNode(current, part)
 		} else {
 			if current.staticChildren == nil {
 				current.staticChildren = make(map[string]*node[V])
@@ -178,14 +176,12 @@ func (r *Router[V]) addRoute(method, path string, handler HandlerFunc[V], middle
 		if part == "" {
 			continue
 		}
-		if part[0] == ':' {
-			paramName := part[1:]
-			paramNames = append(paramNames, paramName)
-			if current.paramChild == nil {
-				current.paramChild = &node[V]{parent: current}
-			}
-			current = current.paramChild
+
+		if part[0] == ':' || strings.Contains(part, ":") {
+			// Handle embedded parameter
+			current, paramNames = r.addEmbeddedParameterNodeWithNames(current, part, paramNames)
 		} else if part[0] == '*' {
+			// Wildcard parameter
 			paramName := part[1:]
 			paramNames = append(paramNames, paramName)
 			if current.wildcardChild == nil {
@@ -198,6 +194,7 @@ func (r *Router[V]) addRoute(method, path string, handler HandlerFunc[V], middle
 			}
 			break
 		} else {
+			// Static segment
 			if current.staticChildren == nil {
 				current.staticChildren = make(map[string]*node[V])
 			}
@@ -227,6 +224,106 @@ func (r *Router[V]) addRoute(method, path string, handler HandlerFunc[V], middle
 	if len(middleware) > 0 {
 		current.middleware = append(current.middleware, middleware...)
 	}
+}
+
+// Helper function to handle embedded parameters during route addition
+func (r *Router[V]) addEmbeddedParameterNodeWithNames(current *node[V], part string, paramNames []string) (*node[V], []string) {
+	for {
+		if part == "" {
+			break
+		}
+
+		idx := strings.IndexByte(part, ':')
+		if idx == -1 {
+			// Remaining part is static
+			if current.staticChildren == nil {
+				current.staticChildren = make(map[string]*node[V])
+			}
+			if current.staticChildren[part] == nil {
+				current.staticChildren[part] = &node[V]{parent: current}
+			}
+			current = current.staticChildren[part]
+			break
+		}
+
+		// Static part before ':'
+		if idx > 0 {
+			staticPart := part[:idx]
+			if current.staticChildren == nil {
+				current.staticChildren = make(map[string]*node[V])
+			}
+			if current.staticChildren[staticPart] == nil {
+				current.staticChildren[staticPart] = &node[V]{parent: current}
+			}
+			current = current.staticChildren[staticPart]
+		}
+
+		// Parameter part after ':'
+		part = part[idx+1:]
+		var paramName string
+		nextIdx := strings.IndexAny(part, ":*")
+		if nextIdx != -1 {
+			paramName = part[:nextIdx]
+			part = part[nextIdx:]
+		} else {
+			paramName = part
+			part = ""
+		}
+		paramNames = append(paramNames, paramName)
+		if current.paramChild == nil {
+			current.paramChild = &node[V]{parent: current}
+		}
+		current = current.paramChild
+	}
+	return current, paramNames
+}
+
+// Helper function to handle embedded parameters in group prefixes
+func (r *Router[V]) addEmbeddedParameterNode(current *node[V], part string) *node[V] {
+	for {
+		if part == "" {
+			break
+		}
+
+		idx := strings.IndexByte(part, ':')
+		if idx == -1 {
+			// Remaining part is static
+			if current.staticChildren == nil {
+				current.staticChildren = make(map[string]*node[V])
+			}
+			if current.staticChildren[part] == nil {
+				current.staticChildren[part] = &node[V]{parent: current}
+			}
+			current = current.staticChildren[part]
+			break
+		}
+
+		// Static part before ':'
+		if idx > 0 {
+			staticPart := part[:idx]
+			if current.staticChildren == nil {
+				current.staticChildren = make(map[string]*node[V])
+			}
+			if current.staticChildren[staticPart] == nil {
+				current.staticChildren[staticPart] = &node[V]{parent: current}
+			}
+			current = current.staticChildren[staticPart]
+		}
+
+		// Parameter part after ':'
+		part = part[idx+1:]
+		nextIdx := strings.IndexAny(part, ":*")
+		if nextIdx != -1 {
+			part = part[nextIdx:]
+		} else {
+			part = ""
+		}
+		if current.paramChild == nil {
+			current.paramChild = &node[V]{parent: current}
+		}
+		current = current.paramChild
+	}
+	return current
 }
 
 func (r *Router[V]) buildMiddlewareChain(current *node[V], routeMiddleware []MiddlewareFunc[V]) []MiddlewareFunc[V] {
@@ -305,17 +402,68 @@ func (r *Router[V]) search(method, path string) (HandlerFunc[V], []MiddlewareFun
 	var paramsValues []string
 
 	for i, part := range parts {
+		if part == "" {
+			continue
+		}
+
+		// First, try to match exact static segments
 		if child, ok := current.staticChildren[part]; ok {
 			current = child
 			continue
 		}
 
+		// Next, try to match embedded parameters
+		matched := false
+		if current.staticChildren != nil {
+			for key, child := range current.staticChildren {
+				if strings.HasPrefix(part, key) {
+					remaining := part[len(key):]
+					if remaining != "" {
+						current = child
+						part = remaining
+						for {
+							if current.paramChild != nil {
+								paramsValues = append(paramsValues, part)
+								current = current.paramChild
+								matched = true
+								break
+							}
+							if current.staticChildren != nil {
+								found := false
+								for k, c := range current.staticChildren {
+									if strings.HasPrefix(part, k) {
+										current = c
+										part = part[len(k):]
+										found = true
+										break
+									}
+								}
+								if !found {
+									break
+								}
+							} else {
+								break
+							}
+						}
+						if matched {
+							break
+						}
+					}
+				}
+			}
+		}
+		if matched {
+			continue
+		}
+
+		// Next, try to match standard parameters
 		if current.paramChild != nil {
 			paramsValues = append(paramsValues, part)
 			current = current.paramChild
 			continue
 		}
 
+		// Finally, try to match wildcard parameters
 		if current.wildcardChild != nil {
 			// Remaining parts are matched to wildcard parameter
 			remainingParts := strings.Join(parts[i:], "/")

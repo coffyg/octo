@@ -281,6 +281,29 @@ func TestComplexParameterRoute(t *testing.T) {
 		t.Errorf("Expected '%s', got '%s'", expectedBody, string(body))
 	}
 }
+func TestEmbeddedParameterRoute(t *testing.T) {
+	router := NewRouter[CustomData]()
+
+	// Handler for embedded parameter route
+	router.GET("/User:action", func(ctx *Ctx[CustomData]) {
+		action := ctx.Param("action")
+		ctx.ResponseWriter.Write([]byte("Action: " + action))
+	})
+
+	// Test embedded parameter route
+	req := httptest.NewRequest("GET", "/User:get", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	resp := w.Result()
+	body, _ := io.ReadAll(resp.Body)
+
+	expectedBody := "Action: :get"
+	if string(body) != expectedBody {
+		t.Errorf("Expected '%s', got '%s'", expectedBody, string(body))
+	}
+}
+
 func TestUseGlobalMiddlewareWithNoRoute(t *testing.T) {
 	router := NewRouter[CustomData]()
 
