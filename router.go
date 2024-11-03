@@ -1,6 +1,7 @@
 package octo
 
 import (
+	"bytes"
 	"fmt"
 	"net/http"
 	"runtime/debug"
@@ -561,6 +562,7 @@ func (r *Router[V]) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	responseWriter := &ResponseWriterWrapper{
 		ResponseWriter: w,
 		status:         http.StatusOK, // default status code
+		body:           &bytes.Buffer{},
 	}
 
 	ctx := &Ctx[V]{
