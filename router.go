@@ -4,11 +4,12 @@ import (
 	"bytes"
 	"fmt"
 	"net/http"
-	"runtime/debug"
+	"runtime"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/rs/zerolog"
 )
 
 type HandlerFunc[V any] func(*Ctx[V])
@@ -583,19 +584,44 @@ func RecoveryMiddleware[V any]() MiddlewareFunc[V] {
 		return func(ctx *Ctx[V]) {
 			defer func() {
 				if err := recover(); err != nil {
-					stack := debug.Stack()
+					// Capture the stack trace
+					var pcs [32]uintptr
+					n := runtime.Callers(3, pcs[:]) // Skip first 3 callers
+					frames := runtime.CallersFrames(pcs[:n])
 
-					// Enhanced log formatting for readability
-					formattedStack := formatStackTrace(stack)
+					var stackLines []string
 
+					for {
+						frame, more := frames.Next()
+						stackLines = append(stackLines, fmt.Sprintf("%s\n\t%s:%d", frame.Function, frame.File, frame.Line))
+
+						if !more {
+							break
+						}
+					}
+
+					formattedStack := strings.Join(stackLines, "\n")
+					zStack := zerolog.Arr()
+					for _, line := range stackLines {
+						zStack.Str(line)
+					}
 					if logger != nil {
 						logger.Error().
 							Interface("error", err).
-							Str("stack", formattedStack).
+							Array("stack", zStack).
 							Str("path", ctx.Request.URL.Path).
-							Msgf("[octo-panic] Panic recovered: %v", err)
+							Str("method", ctx.Request.Method).
+							Msg("[octo-panic] Panic recovered")
 					} else {
-						fmt.Printf("[octo-panic] Panic recovered: %v\nStack trace:\n%s\n", err, formattedStack)
+						// Fallback to plain text logging
+						fmt.Printf("[octo-panic] Panic recovered: %v\n", err)
+						fmt.Printf("Path: %s, Method: %s\n", ctx.Request.URL.Path, ctx.Request.Method)
+						fmt.Printf("Stack trace:\n%s\n", formattedStack)
+					}
+
+					// Optionally, send an HTTP 500 response
+					if !strings.Contains(ctx.ResponseWriter.Header().Get("Content-Type"), "application/json") {
+						http.Error(ctx.ResponseWriter, "Internal Server Error", http.StatusInternalServerError)
 					}
 				}
 			}()
@@ -604,16 +630,4 @@ func RecoveryMiddleware[V any]() MiddlewareFunc[V] {
 			next(ctx)
 		}
 	}
-}
-
-// Helper function to format stack trace for better readability
-func formatStackTrace(stack []byte) string {
-	stackLines := strings.Split(string(stack), "\n")
-	var formattedStack strings.Builder
-	for _, line := range stackLines {
-		if strings.TrimSpace(line) != "" {
-			formattedStack.WriteString("\t" + line + "\n")
-		}
-	}
-	return formattedStack.String()
 }
