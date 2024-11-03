@@ -607,8 +607,9 @@ func RecoveryMiddleware[V any]() MiddlewareFunc[V] {
 					}
 					if logger != nil {
 						logger.Error().
+							Stack().
 							Interface("error", err).
-							Array("stack", zStack).
+							Array("stack_array", zStack).
 							Str("path", ctx.Request.URL.Path).
 							Str("method", ctx.Request.Method).
 							Msg("[octo-panic] Panic recovered")
