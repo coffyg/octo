@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/pkg/errors"
 	"github.com/rs/zerolog"
 )
 
@@ -606,9 +607,17 @@ func RecoveryMiddleware[V any]() MiddlewareFunc[V] {
 						zStack.Str(line)
 					}
 					if logger != nil {
+						var wrappedErr error
+						switch e := err.(type) {
+						case error:
+							wrappedErr = errors.WithStack(e)
+						default:
+							wrappedErr = errors.Errorf("%v", e)
+						}
+
 						logger.Error().
+							Err(wrappedErr).
 							Stack().
-							Interface("error", err).
 							Array("stack_array", zStack).
 							Str("path", ctx.Request.URL.Path).
 							Str("method", ctx.Request.Method).
