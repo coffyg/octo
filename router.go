@@ -592,6 +592,7 @@ func RecoveryMiddleware[V any]() MiddlewareFunc[V] {
 						logger.Error().
 							Interface("error", err).
 							Str("stack", formattedStack).
+							Str("path", ctx.Request.URL.Path).
 							Msgf("[octo-panic] Panic recovered: %v", err)
 					} else {
 						fmt.Printf("[octo-panic] Panic recovered: %v\nStack trace:\n%s\n", err, formattedStack)
