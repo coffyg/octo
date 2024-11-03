@@ -597,9 +597,6 @@ func RecoveryMiddleware[V any]() MiddlewareFunc[V] {
 					} else {
 						fmt.Printf("[octo-panic] Panic recovered: %v\nStack trace:\n%s\n", err, formattedStack)
 					}
-
-					// Return a standard error response
-					ctx.SendError("err_internal_error", fmt.Errorf("%v", err))
 				}
 			}()
 
