@@ -13,7 +13,6 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/bytedance/sonic"
 	"github.com/go-playground/form/v4"
 )
 
@@ -197,7 +196,7 @@ func (c *Ctx[V]) ShouldBindJSON(obj interface{}) error {
 	if len(c.Body) == 0 {
 		return errors.New("request body is empty")
 	}
-	return sonic.Unmarshal(c.Body, obj)
+	return json.Unmarshal(c.Body, obj)
 }
 
 // ShouldBindXML binds the XML request body into the provided object.
