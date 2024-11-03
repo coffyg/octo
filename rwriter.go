@@ -11,23 +11,23 @@ import (
 // ResponseWriterWrapper wraps http.ResponseWriter and captures response data
 type ResponseWriterWrapper struct {
 	http.ResponseWriter
-	status int
+	Status int
 	size   int
-	body   *bytes.Buffer // Buffer to capture response body
+	Body   *bytes.Buffer // Buffer to capture response body
 }
 
 // NewResponseWriterWrapper initializes a new ResponseWriterWrapper
 func NewResponseWriterWrapper(w http.ResponseWriter) *ResponseWriterWrapper {
 	return &ResponseWriterWrapper{
 		ResponseWriter: w,
-		status:         http.StatusOK, // Default status code
-		body:           &bytes.Buffer{},
+		Status:         http.StatusOK, // Default status code
+		Body:           &bytes.Buffer{},
 	}
 }
 
 // WriteHeader captures the status code
 func (w *ResponseWriterWrapper) WriteHeader(statusCode int) {
-	w.status = statusCode
+	w.Status = statusCode
 	w.ResponseWriter.WriteHeader(statusCode)
 }
 
@@ -36,7 +36,7 @@ func (w *ResponseWriterWrapper) Write(data []byte) (int, error) {
 	size, err := w.ResponseWriter.Write(data)
 	w.size += size
 	if err == nil {
-		w.body.Write(data) // Capture the response body
+		w.Body.Write(data) // Capture the response body
 	}
 	return size, err
 }

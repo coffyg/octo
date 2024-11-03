@@ -562,8 +562,8 @@ func (r *Router[V]) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	// Wrap the ResponseWriter with ResponseWriterWrapper
 	responseWriter := &ResponseWriterWrapper{
 		ResponseWriter: w,
-		status:         http.StatusOK, // default status code
-		body:           &bytes.Buffer{},
+		Status:         http.StatusOK, // default status code
+		Body:           &bytes.Buffer{},
 	}
 
 	ctx := &Ctx[V]{
