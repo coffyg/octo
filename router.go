@@ -601,7 +601,6 @@ func RecoveryMiddleware[V any]() MiddlewareFunc[V] {
 						}
 					}
 
-					formattedStack := strings.Join(stackLines, "\n")
 					zStack := zerolog.Arr()
 					for _, line := range stackLines {
 						zStack.Str(line)
@@ -615,6 +614,12 @@ func RecoveryMiddleware[V any]() MiddlewareFunc[V] {
 							wrappedErr = errors.Errorf("%v", e)
 						}
 
+						if errors.Is(wrappedErr, http.ErrAbortHandler) {
+							logger.Warn().Str("path", ctx.Request.URL.Path).
+								Str("method", ctx.Request.Method).Msg("[octo-panic] Client aborted request (panic recovered)")
+							return
+						}
+
 						logger.Error().
 							Err(wrappedErr).
 							Stack().
@@ -622,13 +627,7 @@ func RecoveryMiddleware[V any]() MiddlewareFunc[V] {
 							Str("path", ctx.Request.URL.Path).
 							Str("method", ctx.Request.Method).
 							Msg("[octo-panic] Panic recovered")
-					} else {
-						// Fallback to plain text logging
-						fmt.Printf("[octo-panic] Panic recovered: %v\n", err)
-						fmt.Printf("Path: %s, Method: %s\n", ctx.Request.URL.Path, ctx.Request.Method)
-						fmt.Printf("Stack trace:\n%s\n", formattedStack)
 					}
-
 					// Optionally, send an HTTP 500 response
 					if !strings.Contains(ctx.ResponseWriter.Header().Get("Content-Type"), "application/json") {
 						http.Error(ctx.ResponseWriter, "Internal Server Error", http.StatusInternalServerError)
