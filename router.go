@@ -557,7 +557,6 @@ func notFoundHandler[V any](ctx *Ctx[V]) {
 }
 
 // ServeHTTP implements the http.Handler interface
-// ServeHTTP implements the http.Handler interface
 func (r *Router[V]) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	path := req.URL.Path
 	method := req.Method
@@ -601,28 +600,31 @@ func (r *Router[V]) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	// Apply middleware
 	handler = applyMiddleware(handler, middlewareChain)
 
+	// Defer resetting and putting back into pool
+	defer func() {
+		// After handling the request, reset and put back into pool
+		// Reset ctx fields
+		ctx.ResponseWriter = nil
+		ctx.Request = nil
+		ctx.Params = nil
+		ctx.Query = nil
+		ctx.Headers = nil
+		ctx.Body = nil
+		ctx.Custom = zeroV // Reset Custom field
+		r.ctxPool.Put(ctx)
+
+		// Reset ResponseWriterWrapper fields
+		responseWriter.ResponseWriter = nil
+		responseWriter.Status = http.StatusOK
+		responseWriter.size = 0
+		if responseWriter.Body != nil {
+			responseWriter.Body.Reset()
+		}
+		r.responseWriterPool.Put(responseWriter)
+	}()
+
 	// Call handler
 	handler(ctx)
-
-	// After handling the request, reset and put back into pool
-	// Reset ctx fields
-	ctx.ResponseWriter = nil
-	ctx.Request = nil
-	ctx.Params = nil
-	ctx.Query = nil
-	ctx.Headers = nil
-	ctx.Body = nil
-	ctx.Custom = zeroV // Reset Custom field
-	r.ctxPool.Put(ctx)
-
-	// Reset ResponseWriterWrapper fields
-	responseWriter.ResponseWriter = nil
-	responseWriter.Status = http.StatusOK
-	responseWriter.size = 0
-	if responseWriter.Body != nil {
-		responseWriter.Body.Reset()
-	}
-	r.responseWriterPool.Put(responseWriter)
 }
 
 func RecoveryMiddleware[V any]() MiddlewareFunc[V] {
