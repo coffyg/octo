@@ -6,13 +6,17 @@ import (
 	"encoding/json"
 	"encoding/xml"
 	"errors"
+	"fmt"
 	"io"
 	"mime"
 	"net"
 	"net/http"
 	"net/url"
+	"runtime"
 	"strings"
+	"time"
 
+	"github.com/Fy-/octypes"
 	"github.com/go-playground/form/v4"
 )
 
@@ -55,21 +59,30 @@ func (c *Ctx[V]) SetParam(key, value string) {
 func (c *Ctx[V]) SetStatus(code int) {
 	c.ResponseWriter.WriteHeader(code)
 }
+
 func (c *Ctx[V]) JSON(statusCode int, v interface{}) {
 	c.SendJSON(statusCode, v)
 }
 
 func (c *Ctx[V]) SendJSON(statusCode int, v interface{}) {
+	if c.done {
+		return
+	}
 	c.SetHeader("Content-Type", "application/json")
 
 	response, err := json.Marshal(v)
 	if err != nil {
 		c.SetStatus(http.StatusInternalServerError)
 		c.ResponseWriter.Write([]byte("error encoding response: " + err.Error()))
+		c.Done()
 		return
 	}
 	c.SetStatus(statusCode)
-	c.ResponseWriter.Write(response)
+	_, err = c.ResponseWriter.Write(response)
+	if err != nil {
+		logger.Error().Err(err).Msg("[octo] failed to write response")
+	}
+	c.Done()
 }
 
 func (c *Ctx[V]) Param(key string) string {
@@ -81,7 +94,6 @@ func (c *Ctx[V]) Param(key string) string {
 }
 
 func (c *Ctx[V]) QueryParam(key string) string {
-	// check if it's in params
 	if value, ok := c.Params[key]; ok {
 		return value
 	}
@@ -94,7 +106,6 @@ func (c *Ctx[V]) QueryParam(key string) string {
 }
 
 func (c *Ctx[V]) DefaultQueryParam(key, defaultValue string) string {
-	// check if it's in params
 	if value, ok := c.Params[key]; ok {
 		return value
 	}
@@ -120,6 +131,7 @@ func (c *Ctx[V]) DefaultQuery(key, defaultValue string) string {
 	if len(values) > 0 {
 		return values[0]
 	}
+
 	return defaultValue
 }
 
@@ -136,8 +148,21 @@ func (c *Ctx[V]) Context() context.Context {
 }
 
 func (c *Ctx[V]) Done() {
+	if c.done {
+		return
+	}
+	// Flush the response if possible
+	c.ResponseWriter.Flush()
+	// Close the request body if it's not nil
+	if c.Request.Body != nil {
+		c.Request.Body.Close()
+		c.Request.Body = nil
+	}
 	c.done = true
-	c.Request.Context().Done()
+}
+
+func (c *Ctx[V]) IsDone() bool {
+	return c.done
 }
 
 // ClientIP returns the client's IP address, even if behind a proxy
@@ -192,7 +217,10 @@ func (c *Ctx[V]) SetCookie(name, value string, maxAge int, path, domain string, 
 
 // BindJSON binds the request body into an interface.
 func (c *Ctx[V]) ShouldBindJSON(obj interface{}) error {
-	c.NeedBody()
+	err := c.NeedBody()
+	if err != nil {
+		return err
+	}
 	if len(c.Body) == 0 {
 		return errors.New("request body is empty")
 	}
@@ -201,7 +229,10 @@ func (c *Ctx[V]) ShouldBindJSON(obj interface{}) error {
 
 // ShouldBindXML binds the XML request body into the provided object.
 func (c *Ctx[V]) ShouldBindXML(obj interface{}) error {
-	c.NeedBody()
+	err := c.NeedBody()
+	if err != nil {
+		return err
+	}
 	if len(c.Body) == 0 {
 		return errors.New("request body is empty")
 	}
@@ -210,9 +241,12 @@ func (c *Ctx[V]) ShouldBindXML(obj interface{}) error {
 
 // ShouldBindForm binds form data into the provided object.
 func (c *Ctx[V]) ShouldBindForm(obj interface{}) error {
-	c.NeedBody()
+	err := c.NeedBody()
+	if err != nil {
+		return err
+	}
 	// Reset Request.Body
-	c.Request.Body = io.NopCloser(bytes.NewBuffer(c.Body))
+	c.Request.Body = io.NopCloser(bytes.NewReader(c.Body))
 
 	if err := c.Request.ParseForm(); err != nil {
 		return err
@@ -223,9 +257,12 @@ func (c *Ctx[V]) ShouldBindForm(obj interface{}) error {
 
 // ShouldBindMultipartForm binds multipart form data into the provided object.
 func (c *Ctx[V]) ShouldBindMultipartForm(obj interface{}) error {
-	c.NeedBody()
+	err := c.NeedBody()
+	if err != nil {
+		return err
+	}
 	// Reset Request.Body
-	c.Request.Body = io.NopCloser(bytes.NewBuffer(c.Body))
+	c.Request.Body = io.NopCloser(bytes.NewReader(c.Body))
 
 	if err := c.Request.ParseMultipartForm(32 << 20); err != nil {
 		return err
@@ -264,14 +301,183 @@ func (c *Ctx[V]) NeedBody() error {
 		return nil
 	}
 	c.hasReadBody = true
-	var body []byte
-	var err error
-	body, err = io.ReadAll(c.Request.Body)
+	body, err := io.ReadAll(c.Request.Body)
 	if err != nil {
 		logger.Error().Err(err).Msg("[octo] failed to read request body")
 		return err
 	}
-	c.Request.Body = io.NopCloser(strings.NewReader(string(body)))
+	c.Request.Body = io.NopCloser(bytes.NewReader(body))
 	c.Body = body
 	return nil
+}
+
+// SendError sends an error response based on the provided error code and error
+func (c *Ctx[V]) SendError(code string, err error) {
+	if c.done {
+		return
+	}
+	apiError, ok := APIErrors[code]
+	if !ok {
+		apiError = APIErrors["err_unknown_error"]
+	}
+	message := apiError.Message
+	if err != nil {
+		message += ": " + err.Error()
+		if pc, file, line, ok := runtime.Caller(1); ok {
+			funcName := runtime.FuncForPC(pc).Name()
+			logger.Error().Err(err).Msgf("[octo-error] error: %s in %s:%d %s", err.Error(), file, line, funcName)
+		}
+	}
+	result := BaseResult{
+		Result:  "error",
+		Message: message,
+		Token:   code,
+		Time:    float64(time.Now().UnixNano()-c.StartTime) / 1e9,
+	}
+	c.SendJSON(apiError.Code, result)
+}
+
+// SendErrorStatus sends an error response with a specific HTTP status code
+func (c *Ctx[V]) SendErrorStatus(statusCode int, code string, err error) {
+	if c.done {
+		return
+	}
+	apiError, ok := APIErrors[code]
+	if !ok {
+		apiError = APIErrors["err_unknown_error"]
+	}
+	message := apiError.Message
+	if err != nil {
+		message += ": " + err.Error()
+		if pc, file, line, ok := runtime.Caller(1); ok {
+			funcName := runtime.FuncForPC(pc).Name()
+			logger.Error().Err(err).Msgf("[octo-error] error: %s in %s:%d %s", err.Error(), file, line, funcName)
+		}
+	}
+	result := BaseResult{
+		Result:  "error",
+		Message: message,
+		Token:   code,
+		Time:    float64(time.Now().UnixNano()-c.StartTime) / 1e9,
+	}
+	c.SendJSON(statusCode, result)
+}
+
+func (c *Ctx[V]) Redirect(status int, url string) {
+	if c.done {
+		return
+	}
+	http.Redirect(c.ResponseWriter, c.Request, url, status)
+	c.Done()
+}
+
+// Send404 sends a 404 Not Found error response
+func (c *Ctx[V]) Send404() {
+	if c.done {
+		return
+	}
+	c.SendError("err_not_found", nil)
+}
+
+// Send401 sends a 401 Unauthorized error response
+func (c *Ctx[V]) Send401() {
+	if c.done {
+		return
+	}
+	c.SendError("err_unauthorized", nil)
+}
+
+// SendInvalidUUID sends an error response for invalid UUID
+func (c *Ctx[V]) SendInvalidUUID() {
+	if c.done {
+		return
+	}
+	c.SendError("err_invalid_uuid", nil)
+}
+
+// NewJSONResult sends a successful JSON response with optional pagination
+func (c *Ctx[V]) NewJSONResult(data interface{}, pagination *octypes.Pagination) {
+	if c.done {
+		return
+	}
+	result := BaseResult{
+		Data:   data,
+		Time:   float64(time.Now().UnixNano()-c.StartTime) / 1e9,
+		Result: "success",
+		Paging: pagination,
+	}
+	c.SendJSON(http.StatusOK, result)
+}
+
+// SendData sends a response with the provided status code and data
+func (c *Ctx[V]) SendData(statusCode int, contentType string, data []byte) {
+	if c.done {
+		return
+	}
+	c.SetHeader("Content-Type", contentType)
+	c.SetStatus(statusCode)
+	_, err := c.ResponseWriter.Write(data)
+	if err != nil {
+		logger.Error().Err(err).Msg("[octo] failed to write data")
+	}
+	c.Done()
+}
+
+// Send a file as response
+func (c *Ctx[V]) File(urlPath string, filePath string) {
+	if c.done {
+		return
+	}
+	if filePath == "" {
+		c.SendError("err_internal_error", fmt.Errorf("file path is empty"))
+		return
+	}
+
+	http.ServeFile(c.ResponseWriter, c.Request, filePath)
+	c.Done()
+}
+
+// Send a file as response from a http.FileSystem
+func (c *Ctx[V]) FileFromFS(urlPath string, fs http.FileSystem, filePath string) {
+	if c.done {
+		return
+	}
+	if fs == nil {
+		c.SendError("err_internal_error", fmt.Errorf("http.FileSystem is nil"))
+		return
+	}
+	http.FileServer(fs).ServeHTTP(c.ResponseWriter, c.Request)
+	c.Done()
+}
+
+// APIError represents an API error with a message and HTTP status code
+type APIError struct {
+	Message string
+	Code    int
+}
+
+// BaseResult is the standard response format
+type BaseResult struct {
+	Data    interface{}         `json:"data,omitempty"`
+	Time    float64             `json:"time"`
+	Result  string              `json:"result"`
+	Message string              `json:"message,omitempty"`
+	Paging  *octypes.Pagination `json:"paging,omitempty"`
+	Token   string              `json:"token,omitempty"`
+}
+
+// APIErrors is a map of error codes to APIError structs
+var APIErrors = map[string]*APIError{
+	"err_unknown_error":            {"Unknown error", http.StatusInternalServerError},
+	"err_internal_error":           {"Internal error", http.StatusInternalServerError},
+	"err_db_error":                 {"Database error", http.StatusInternalServerError},
+	"err_invalid_request":          {"Invalid request", http.StatusBadRequest},
+	"err_invalid_email_address":    {"Invalid email address", http.StatusBadRequest},
+	"err_all_fields_are_mandatory": {"Missing required fields", http.StatusBadRequest},
+	"err_email_not_configured":     {"Email not configured", http.StatusInternalServerError},
+	"err_unauthorized":             {"Unauthorized", http.StatusUnauthorized},
+	"err_not_found":                {"Not found", http.StatusNotFound},
+	"err_invalid_uuid":             {"Invalid UUID", http.StatusBadRequest},
+	"err_json_error":               {"JSON error", http.StatusBadRequest},
+	// Add other error codes as needed
 }
