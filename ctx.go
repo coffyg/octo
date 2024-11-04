@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/url"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -68,15 +69,13 @@ func (c *Ctx[V]) SendJSON(statusCode int, v interface{}) {
 	if c.done {
 		return
 	}
-	c.SetHeader("Content-Type", "application/json")
-
 	response, err := json.Marshal(v)
 	if err != nil {
-		c.SetStatus(http.StatusInternalServerError)
-		c.ResponseWriter.Write([]byte("error encoding response: " + err.Error()))
-		c.Done()
+		c.SendError("err_json_error", err)
 		return
 	}
+	c.SetHeader("Content-Type", "application/json")
+	c.SetHeader("Content-Length", strconv.Itoa(len(response)))
 	c.SetStatus(statusCode)
 	_, err = c.ResponseWriter.Write(response)
 	if err != nil {
@@ -301,11 +300,21 @@ func (c *Ctx[V]) NeedBody() error {
 		return nil
 	}
 	c.hasReadBody = true
-	body, err := io.ReadAll(c.Request.Body)
+
+	limitedReader := io.LimitReader(c.Request.Body, maxBodySize+1)
+	body, err := io.ReadAll(limitedReader)
 	if err != nil {
 		logger.Error().Err(err).Msg("[octo] failed to read request body")
 		return err
 	}
+
+	if int64(len(body)) > maxBodySize {
+		err := errors.New("request body too large")
+		logger.Error().Err(err).Msg("[octo] request body exceeds maximum allowed size")
+		return err
+	}
+
+	c.Request.Body.Close()
 	c.Request.Body = io.NopCloser(bytes.NewReader(body))
 	c.Body = body
 	return nil
@@ -415,6 +424,7 @@ func (c *Ctx[V]) SendData(statusCode int, contentType string, data []byte) {
 		return
 	}
 	c.SetHeader("Content-Type", contentType)
+	c.SetHeader("Content-Length", strconv.Itoa(len(data)))
 	c.SetStatus(statusCode)
 	_, err := c.ResponseWriter.Write(data)
 	if err != nil {
