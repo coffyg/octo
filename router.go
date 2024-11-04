@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"runtime"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -35,25 +34,12 @@ type Router[V any] struct {
 	root               *node[V]
 	middleware         []MiddlewareFunc[V]
 	preGroupMiddleware []MiddlewareFunc[V]
-	ctxPool            sync.Pool
-	responseWriterPool sync.Pool
 }
 
 func NewRouter[V any]() *Router[V] {
-	r := &Router[V]{
+	return &Router[V]{
 		root: &node[V]{},
 	}
-	r.ctxPool = sync.Pool{
-		New: func() interface{} {
-			return &Ctx[V]{}
-		},
-	}
-	r.responseWriterPool = sync.Pool{
-		New: func() interface{} {
-			return &ResponseWriterWrapper{}
-		},
-	}
-	return r
 }
 
 // UseGlobal adds middleware that applies to all routes before group middleware
@@ -552,9 +538,6 @@ func applyMiddleware[V any](handler HandlerFunc[V], middleware []MiddlewareFunc[
 	}
 	return handler
 }
-func notFoundHandler[V any](ctx *Ctx[V]) {
-	ctx.Send404()
-}
 
 // ServeHTTP implements the http.Handler interface
 func (r *Router[V]) ServeHTTP(w http.ResponseWriter, req *http.Request) {
@@ -564,66 +547,36 @@ func (r *Router[V]) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	handler, middlewareChain, params, ok := r.search(method, path)
 
 	if !ok {
-		// Route not found, use predefined notFoundHandler
-		handler = notFoundHandler[V]
+		// Route not found, define a default handler
+		handler = func(ctx *Ctx[V]) {
+			if req.Method == "OPTIONS" {
+				w.Header().Set("Allow", "GET, POST, PUT, DELETE, PATCH, OPTIONS, HEAD")
+				w.WriteHeader(http.StatusOK)
+				return
+			}
+			http.NotFound(ctx.ResponseWriter, ctx.Request)
+		}
 		// Build middleware chain for 404 handler
 		middlewareChain = r.globalMiddlewareChain()
 	}
 
-	// Get ResponseWriterWrapper from pool
-	responseWriter := r.responseWriterPool.Get().(*ResponseWriterWrapper)
-	// Initialize ResponseWriterWrapper
-	responseWriter.ResponseWriter = w
-	responseWriter.Status = http.StatusOK
-	responseWriter.size = 0
-	if responseWriter.Body != nil {
-		responseWriter.Body.Reset()
-	} else {
-		responseWriter.Body = &bytes.Buffer{}
+	// Wrap the ResponseWriter with ResponseWriterWrapper
+	responseWriter := &ResponseWriterWrapper{
+		ResponseWriter: w,
+		Status:         http.StatusOK, // default status code
+		Body:           &bytes.Buffer{},
 	}
 
-	// Get Ctx[V] from pool
-	ctx := r.ctxPool.Get().(*Ctx[V])
-	// Initialize Ctx[V]
-	ctx.ResponseWriter = responseWriter
-	ctx.Request = req
-	ctx.Params = params
-	ctx.StartTime = time.Now().UnixNano()
-	ctx.UUID = uuid.NewString()
-	ctx.Query = req.URL.Query()
-	ctx.done = false
-	ctx.hasReadBody = false
-	ctx.Body = nil
-	var zeroV V
-	ctx.Custom = zeroV
-
-	// Apply middleware
+	ctx := &Ctx[V]{
+		ResponseWriter: responseWriter,
+		Request:        req,
+		Params:         params,
+		StartTime:      time.Now().UnixNano(),
+		UUID:           uuid.NewString(),
+		Query:          req.URL.Query(),
+	}
 	handler = applyMiddleware(handler, middlewareChain)
 
-	// Defer resetting and putting back into pool
-	defer func() {
-		// After handling the request, reset and put back into pool
-		// Reset ctx fields
-		ctx.ResponseWriter = nil
-		ctx.Request = nil
-		ctx.Params = nil
-		ctx.Query = nil
-		ctx.Headers = nil
-		ctx.Body = nil
-		ctx.Custom = zeroV // Reset Custom field
-		r.ctxPool.Put(ctx)
-
-		// Reset ResponseWriterWrapper fields
-		responseWriter.ResponseWriter = nil
-		responseWriter.Status = http.StatusOK
-		responseWriter.size = 0
-		if responseWriter.Body != nil {
-			responseWriter.Body.Reset()
-		}
-		r.responseWriterPool.Put(responseWriter)
-	}()
-
-	// Call handler
 	handler(ctx)
 }
 
