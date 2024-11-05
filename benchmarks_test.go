@@ -502,65 +502,6 @@ func BenchmarkRouter_Profiled(b *testing.B) {
 	b.ReportMetric(throughput, "req/s")
 }
 
-// BenchmarkRouter_HighConcurrencyMultipleRoutes measures performance under high concurrency with multiple routes.
-func BenchmarkRouter_HighConcurrencyMultipleRoutes(b *testing.B) {
-	b.ReportAllocs()
-	router := NewRouter[CustomData]()
-	paths := []string{"/route1", "/route2", "/route3", "/route4", "/route5"}
-
-	// Include processing delay in handlers
-	for _, path := range paths {
-		router.GET(path, func(ctx *Ctx[CustomData]) {
-			// Simulate processing delay
-			time.Sleep(100 * time.Microsecond)
-			ctx.ResponseWriter.Write([]byte("OK"))
-		})
-	}
-
-	// Use an actual HTTP server
-	server := httptest.NewServer(router)
-	defer server.Close()
-
-	client := &http.Client{}
-
-	b.ResetTimer()
-	startTime := time.Now()
-
-	b.RunParallel(func(pb *testing.PB) {
-		reqs := []*http.Request{
-			mustNewRequest("GET", server.URL+"/route1", nil),
-			mustNewRequest("GET", server.URL+"/route2", nil),
-			mustNewRequest("GET", server.URL+"/route3", nil),
-			mustNewRequest("GET", server.URL+"/route4", nil),
-			mustNewRequest("GET", server.URL+"/route5", nil),
-		}
-		idx := 0
-		for pb.Next() {
-			req := reqs[idx%len(reqs)]
-			idx++
-			resp, err := client.Do(req)
-			if err != nil {
-				b.Fatal(err)
-			}
-			io.Copy(io.Discard, resp.Body)
-			resp.Body.Close()
-		}
-	})
-
-	elapsed := time.Since(startTime)
-	totalRequests := float64(b.N)
-	throughput := totalRequests / elapsed.Seconds()
-	b.ReportMetric(throughput, "req/s")
-}
-
-func mustNewRequest(method, url string, body io.Reader) *http.Request {
-	req, err := http.NewRequest(method, url, body)
-	if err != nil {
-		panic(err)
-	}
-	return req
-}
-
 // BenchmarkRouter_HeavyMiddleware measures performance with middleware that does significant work.
 func BenchmarkRouter_HeavyMiddleware(b *testing.B) {
 	b.ReportAllocs()
