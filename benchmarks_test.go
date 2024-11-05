@@ -1,6 +1,7 @@
 package octo
 
 import (
+	"bytes"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -12,7 +13,7 @@ import (
 	"time"
 )
 
-// Benchmark for routing without middleware
+// BenchmarkRouter_NoMiddleware measures the performance of the router without any middleware.
 func BenchmarkRouter_NoMiddleware(b *testing.B) {
 	router := NewRouter[CustomData]()
 
@@ -24,22 +25,35 @@ func BenchmarkRouter_NoMiddleware(b *testing.B) {
 		})
 	}
 
-	req := httptest.NewRequest("GET", "/route50", nil)
+	// Use an actual HTTP server
+	server := httptest.NewServer(router)
+	defer server.Close()
+
+	client := &http.Client{}
+	req, _ := http.NewRequest("GET", server.URL+"/route50", nil)
 
 	b.ResetTimer()
+	startTime := time.Now()
+
 	for i := 0; i < b.N; i++ {
-		w := httptest.NewRecorder()
-		router.ServeHTTP(w, req)
-		resp := w.Result()
-		io.ReadAll(resp.Body)
+		resp, err := client.Do(req)
+		if err != nil {
+			b.Fatal(err)
+		}
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
 	}
+
+	elapsed := time.Since(startTime)
+	throughput := float64(b.N) / elapsed.Seconds()
+	b.ReportMetric(throughput, "req/s")
 }
 
-// Benchmark for routing with middleware
+// BenchmarkRouter_WithMiddleware measures the performance of the router with middleware.
 func BenchmarkRouter_WithMiddleware(b *testing.B) {
 	router := NewRouter[CustomData]()
 
-	// Global middleware
+	// Global middleware that does minimal work
 	router.Use(func(next HandlerFunc[CustomData]) HandlerFunc[CustomData] {
 		return func(ctx *Ctx[CustomData]) {
 			next(ctx)
@@ -54,40 +68,78 @@ func BenchmarkRouter_WithMiddleware(b *testing.B) {
 		})
 	}
 
-	req := httptest.NewRequest("GET", "/route50", nil)
+	// Use an actual HTTP server
+	server := httptest.NewServer(router)
+	defer server.Close()
+
+	client := &http.Client{}
+	req, _ := http.NewRequest("GET", server.URL+"/route50", nil)
 
 	b.ResetTimer()
+	startTime := time.Now()
+
 	for i := 0; i < b.N; i++ {
-		w := httptest.NewRecorder()
-		router.ServeHTTP(w, req)
-		resp := w.Result()
-		io.ReadAll(resp.Body)
+		resp, err := client.Do(req)
+		if err != nil {
+			b.Fatal(err)
+		}
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
 	}
+
+	elapsed := time.Since(startTime)
+	throughput := float64(b.N) / elapsed.Seconds()
+	b.ReportMetric(throughput, "req/s")
 }
 
-// Benchmark for high concurrency
+// BenchmarkRouter_HighConcurrency measures the router's performance under high concurrency.
 func BenchmarkRouter_HighConcurrency(b *testing.B) {
 	router := NewRouter[CustomData]()
 
+	// Simulate a handler with some processing
 	router.GET("/test", func(ctx *Ctx[CustomData]) {
+		// Simulate processing delay
+		time.Sleep(100 * time.Microsecond)
 		ctx.ResponseWriter.Write([]byte("OK"))
 	})
 
-	b.SetParallelism(100) // Adjust the level of concurrency
+	// Apply realistic middleware
+	router.Use(func(next HandlerFunc[CustomData]) HandlerFunc[CustomData] {
+		return func(ctx *Ctx[CustomData]) {
+			// Simulate middleware overhead
+			time.Sleep(50 * time.Microsecond)
+			next(ctx)
+		}
+	})
+
+	// Use an actual HTTP server
+	server := httptest.NewServer(router)
+	defer server.Close()
+
+	client := &http.Client{}
+	req, _ := http.NewRequest("GET", server.URL+"/test", nil)
+
+	b.ResetTimer()
+	startTime := time.Now()
 
 	b.RunParallel(func(pb *testing.PB) {
-		req := httptest.NewRequest("GET", "/test", nil)
 		for pb.Next() {
-			w := httptest.NewRecorder()
-			router.ServeHTTP(w, req)
-			resp := w.Result()
+			resp, err := client.Do(req)
+			if err != nil {
+				b.Fatal(err)
+			}
 			io.Copy(io.Discard, resp.Body)
 			resp.Body.Close()
 		}
 	})
+
+	elapsed := time.Since(startTime)
+	totalRequests := float64(b.N)
+	throughput := totalRequests / elapsed.Seconds()
+	b.ReportMetric(throughput, "req/s")
 }
 
-// Benchmark for measuring throughput and latency without middleware
+// BenchmarkRouter_Throughput_NoMiddleware measures throughput without middleware.
 func BenchmarkRouter_Throughput_NoMiddleware(b *testing.B) {
 	router := NewRouter[CustomData]()
 
@@ -99,26 +151,31 @@ func BenchmarkRouter_Throughput_NoMiddleware(b *testing.B) {
 		})
 	}
 
-	req := httptest.NewRequest("GET", "/route50", nil)
+	// Use an actual HTTP server
+	server := httptest.NewServer(router)
+	defer server.Close()
+
+	client := &http.Client{}
+	req, _ := http.NewRequest("GET", server.URL+"/route50", nil)
 
 	b.ResetTimer()
 	startTime := time.Now()
 
 	for i := 0; i < b.N; i++ {
-		w := httptest.NewRecorder()
-		router.ServeHTTP(w, req)
-		resp := w.Result()
+		resp, err := client.Do(req)
+		if err != nil {
+			b.Fatal(err)
+		}
 		io.Copy(io.Discard, resp.Body)
 		resp.Body.Close()
 	}
 
 	elapsed := time.Since(startTime)
 	throughput := float64(b.N) / elapsed.Seconds()
-
 	b.ReportMetric(throughput, "req/s")
 }
 
-// Benchmark for measuring throughput and latency with middleware
+// BenchmarkRouter_Throughput_WithMiddleware measures throughput with middleware.
 func BenchmarkRouter_Throughput_WithMiddleware(b *testing.B) {
 	router := NewRouter[CustomData]()
 
@@ -137,46 +194,70 @@ func BenchmarkRouter_Throughput_WithMiddleware(b *testing.B) {
 		})
 	}
 
-	req := httptest.NewRequest("GET", "/route50", nil)
+	// Use an actual HTTP server
+	server := httptest.NewServer(router)
+	defer server.Close()
+
+	client := &http.Client{}
+	req, _ := http.NewRequest("GET", server.URL+"/route50", nil)
 
 	b.ResetTimer()
 	startTime := time.Now()
 
 	for i := 0; i < b.N; i++ {
-		w := httptest.NewRecorder()
-		router.ServeHTTP(w, req)
-		resp := w.Result()
+		resp, err := client.Do(req)
+		if err != nil {
+			b.Fatal(err)
+		}
 		io.Copy(io.Discard, resp.Body)
 		resp.Body.Close()
 	}
 
 	elapsed := time.Since(startTime)
 	throughput := float64(b.N) / elapsed.Seconds()
-
 	b.ReportMetric(throughput, "req/s")
 }
 
+var largeResponse []byte
+
+// BenchmarkRouter_LargeResponse measures performance when serving a large response.
 func BenchmarkRouter_LargeResponse(b *testing.B) {
+	if len(largeResponse) == 0 {
+		largeResponse = make([]byte, 10*1024*1024) // Allocate once during package initialization
+	}
+
 	router := NewRouter[CustomData]()
 
-	// Generate a large response body
-	largeResponse := make([]byte, 10*1024*1024) // 10 MB
-
 	router.GET("/large", func(ctx *Ctx[CustomData]) {
-		ctx.ResponseWriter.Write(largeResponse)
+		reader := bytes.NewReader(largeResponse)
+		io.Copy(ctx.ResponseWriter, reader)
 	})
 
-	req := httptest.NewRequest("GET", "/large", nil)
+	// Use an actual HTTP server
+	server := httptest.NewServer(router)
+	defer server.Close()
+
+	client := &http.Client{}
+	req, _ := http.NewRequest("GET", server.URL+"/large", nil)
 
 	b.ResetTimer()
+	startTime := time.Now()
+
 	for i := 0; i < b.N; i++ {
-		w := httptest.NewRecorder()
-		router.ServeHTTP(w, req)
-		resp := w.Result()
-		io.Copy(io.Discard, resp.Body)
+		resp, err := client.Do(req)
+		if err != nil {
+			b.Fatal(err)
+		}
+		io.Copy(io.Discard, resp.Body) // Read the response to simulate client behavior
 		resp.Body.Close()
 	}
+
+	elapsed := time.Since(startTime)
+	throughput := float64(b.N) / elapsed.Seconds()
+	b.ReportMetric(throughput, "req/s")
 }
+
+// BenchmarkRouter_DifferentMethods measures performance for different HTTP methods.
 func BenchmarkRouter_DifferentMethods(b *testing.B) {
 	router := NewRouter[CustomData]()
 
@@ -188,34 +269,52 @@ func BenchmarkRouter_DifferentMethods(b *testing.B) {
 		ctx.ResponseWriter.Write([]byte("POST"))
 	})
 
+	// Use an actual HTTP server
+	server := httptest.NewServer(router)
+	defer server.Close()
+
+	client := &http.Client{}
+
 	// Test GET method
 	b.Run("GET", func(b *testing.B) {
-		req := httptest.NewRequest("GET", "/method", nil)
+		req, _ := http.NewRequest("GET", server.URL+"/method", nil)
 		b.ResetTimer()
+		startTime := time.Now()
 		for i := 0; i < b.N; i++ {
-			w := httptest.NewRecorder()
-			router.ServeHTTP(w, req)
-			resp := w.Result()
+			resp, err := client.Do(req)
+			if err != nil {
+				b.Fatal(err)
+			}
 			io.Copy(io.Discard, resp.Body)
 			resp.Body.Close()
 		}
+		elapsed := time.Since(startTime)
+		throughput := float64(b.N) / elapsed.Seconds()
+		b.ReportMetric(throughput, "req/s")
 	})
 
 	// Test POST method
 	b.Run("POST", func(b *testing.B) {
-		req := httptest.NewRequest("POST", "/method", nil)
+		req, _ := http.NewRequest("POST", server.URL+"/method", nil)
 		b.ResetTimer()
+		startTime := time.Now()
 		for i := 0; i < b.N; i++ {
-			w := httptest.NewRecorder()
-			router.ServeHTTP(w, req)
-			resp := w.Result()
+			resp, err := client.Do(req)
+			if err != nil {
+				b.Fatal(err)
+			}
 			io.Copy(io.Discard, resp.Body)
 			resp.Body.Close()
 		}
+		elapsed := time.Since(startTime)
+		throughput := float64(b.N) / elapsed.Seconds()
+		b.ReportMetric(throughput, "req/s")
 	})
 }
+
+// BenchmarkRouter_GCImpact measures the impact of garbage collection on performance.
 func BenchmarkRouter_GCImpact(b *testing.B) {
-	debug.SetGCPercent(100) // Adjust as needed
+	debug.SetGCPercent(100) // Adjust GC percentage as needed
 
 	b.ReportAllocs()
 	router := NewRouter[CustomData]()
@@ -223,17 +322,31 @@ func BenchmarkRouter_GCImpact(b *testing.B) {
 		ctx.ResponseWriter.Write([]byte("OK"))
 	})
 
-	req := httptest.NewRequest("GET", "/gc", nil)
+	// Use an actual HTTP server
+	server := httptest.NewServer(router)
+	defer server.Close()
+
+	client := &http.Client{}
+	req, _ := http.NewRequest("GET", server.URL+"/gc", nil)
 
 	b.ResetTimer()
+	startTime := time.Now()
+
 	for i := 0; i < b.N; i++ {
-		w := httptest.NewRecorder()
-		router.ServeHTTP(w, req)
-		resp := w.Result()
+		resp, err := client.Do(req)
+		if err != nil {
+			b.Fatal(err)
+		}
 		io.Copy(io.Discard, resp.Body)
 		resp.Body.Close()
 	}
+
+	elapsed := time.Since(startTime)
+	throughput := float64(b.N) / elapsed.Seconds()
+	b.ReportMetric(throughput, "req/s")
 }
+
+// BenchmarkRouter_LargeNumberOfRoutes measures performance with a large number of routes.
 func BenchmarkRouter_LargeNumberOfRoutes(b *testing.B) {
 	b.ReportAllocs()
 	router := NewRouter[CustomData]()
@@ -246,24 +359,39 @@ func BenchmarkRouter_LargeNumberOfRoutes(b *testing.B) {
 		})
 	}
 
-	req := httptest.NewRequest("GET", "/route5000", nil)
+	// Use an actual HTTP server
+	server := httptest.NewServer(router)
+	defer server.Close()
+
+	client := &http.Client{}
+	req, _ := http.NewRequest("GET", server.URL+"/route5000", nil)
 
 	b.ResetTimer()
+	startTime := time.Now()
+
 	for i := 0; i < b.N; i++ {
-		w := httptest.NewRecorder()
-		router.ServeHTTP(w, req)
-		resp := w.Result()
+		resp, err := client.Do(req)
+		if err != nil {
+			b.Fatal(err)
+		}
 		io.Copy(io.Discard, resp.Body)
 		resp.Body.Close()
 	}
+
+	elapsed := time.Since(startTime)
+	throughput := float64(b.N) / elapsed.Seconds()
+	b.ReportMetric(throughput, "req/s")
 }
+
+// latencyMiddleware simulates network latency.
 func latencyMiddleware(next HandlerFunc[CustomData]) HandlerFunc[CustomData] {
 	return func(ctx *Ctx[CustomData]) {
-		time.Sleep(50 * time.Millisecond) // Simulate network latency
+		time.Sleep(10 * time.Millisecond) // Simulate network latency
 		next(ctx)
 	}
 }
 
+// BenchmarkRouter_WithNetworkLatency measures performance with simulated network latency.
 func BenchmarkRouter_WithNetworkLatency(b *testing.B) {
 	b.ReportAllocs()
 	router := NewRouter[CustomData]()
@@ -273,27 +401,34 @@ func BenchmarkRouter_WithNetworkLatency(b *testing.B) {
 		ctx.ResponseWriter.Write([]byte("OK"))
 	})
 
-	req := httptest.NewRequest("GET", "/latency", nil)
+	// Use an actual HTTP server
+	server := httptest.NewServer(router)
+	defer server.Close()
+
+	client := &http.Client{}
 
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		w := httptest.NewRecorder()
-		router.ServeHTTP(w, req)
-		resp := w.Result()
-		io.Copy(io.Discard, resp.Body)
-		resp.Body.Close()
-	}
+	startTime := time.Now()
+
+	b.RunParallel(func(pb *testing.PB) {
+		req, _ := http.NewRequest("GET", server.URL+"/latency", nil)
+		for pb.Next() {
+			resp, err := client.Do(req)
+			if err != nil {
+				b.Fatal(err)
+			}
+			io.Copy(io.Discard, resp.Body)
+			resp.Body.Close()
+		}
+	})
+
+	elapsed := time.Since(startTime)
+	totalRequests := float64(b.N)
+	throughput := totalRequests / elapsed.Seconds()
+	b.ReportMetric(throughput, "req/s")
 }
 
-type gzipResponseWriter struct {
-	io.Writer
-	http.ResponseWriter
-}
-
-func (w *gzipResponseWriter) Write(b []byte) (int, error) {
-	return w.Writer.Write(b)
-}
-
+// BenchmarkRouter_JSONResponse measures performance when sending JSON responses.
 func BenchmarkRouter_JSONResponse(b *testing.B) {
 	b.ReportAllocs()
 	router := NewRouter[CustomData]()
@@ -303,24 +438,43 @@ func BenchmarkRouter_JSONResponse(b *testing.B) {
 		ctx.SendJSON(http.StatusOK, data)
 	})
 
-	req := httptest.NewRequest("GET", "/json", nil)
+	// Use an actual HTTP server
+	server := httptest.NewServer(router)
+	defer server.Close()
+
+	client := &http.Client{}
+	req, _ := http.NewRequest("GET", server.URL+"/json", nil)
 
 	b.ResetTimer()
+	startTime := time.Now()
+
 	for i := 0; i < b.N; i++ {
-		w := httptest.NewRecorder()
-		router.ServeHTTP(w, req)
-		resp := w.Result()
+		resp, err := client.Do(req)
+		if err != nil {
+			b.Fatal(err)
+		}
 		io.Copy(io.Discard, resp.Body)
 		resp.Body.Close()
 	}
+
+	elapsed := time.Since(startTime)
+	throughput := float64(b.N) / elapsed.Seconds()
+	b.ReportMetric(throughput, "req/s")
 }
+
+// BenchmarkRouter_Profiled measures performance while profiling.
 func BenchmarkRouter_Profiled(b *testing.B) {
 	router := NewRouter[CustomData]()
 	router.GET("/profiled", func(ctx *Ctx[CustomData]) {
 		ctx.ResponseWriter.Write([]byte("OK"))
 	})
 
-	req := httptest.NewRequest("GET", "/profiled", nil)
+	// Use an actual HTTP server
+	server := httptest.NewServer(router)
+	defer server.Close()
+
+	client := &http.Client{}
+	req, _ := http.NewRequest("GET", server.URL+"/profiled", nil)
 
 	// Start profiling
 	f, err := os.Create("cpu.prof")
@@ -331,14 +485,23 @@ func BenchmarkRouter_Profiled(b *testing.B) {
 	defer pprof.StopCPUProfile()
 
 	b.ResetTimer()
+	startTime := time.Now()
+
 	for i := 0; i < b.N; i++ {
-		w := httptest.NewRecorder()
-		router.ServeHTTP(w, req)
-		resp := w.Result()
+		resp, err := client.Do(req)
+		if err != nil {
+			b.Fatal(err)
+		}
 		io.Copy(io.Discard, resp.Body)
 		resp.Body.Close()
 	}
+
+	elapsed := time.Since(startTime)
+	throughput := float64(b.N) / elapsed.Seconds()
+	b.ReportMetric(throughput, "req/s")
 }
+
+// BenchmarkRouter_HighConcurrencyMultipleRoutes measures performance under high concurrency with multiple routes.
 func BenchmarkRouter_HighConcurrencyMultipleRoutes(b *testing.B) {
 	b.ReportAllocs()
 	router := NewRouter[CustomData]()
@@ -350,29 +513,51 @@ func BenchmarkRouter_HighConcurrencyMultipleRoutes(b *testing.B) {
 		})
 	}
 
-	b.SetParallelism(100)
+	// Use an actual HTTP server
+	server := httptest.NewServer(router)
+	defer server.Close()
+
+	client := &http.Client{}
+
+	b.ResetTimer()
+	startTime := time.Now()
 
 	b.RunParallel(func(pb *testing.PB) {
 		reqs := []*http.Request{
-			httptest.NewRequest("GET", "/route1", nil),
-			httptest.NewRequest("GET", "/route2", nil),
-			httptest.NewRequest("GET", "/route3", nil),
-			httptest.NewRequest("GET", "/route4", nil),
-			httptest.NewRequest("GET", "/route5", nil),
+			mustNewRequest("GET", server.URL+"/route1", nil),
+			mustNewRequest("GET", server.URL+"/route2", nil),
+			mustNewRequest("GET", server.URL+"/route3", nil),
+			mustNewRequest("GET", server.URL+"/route4", nil),
+			mustNewRequest("GET", server.URL+"/route5", nil),
 		}
 		idx := 0
 		for pb.Next() {
 			req := reqs[idx%len(reqs)]
 			idx++
-			w := httptest.NewRecorder()
-			router.ServeHTTP(w, req)
-			resp := w.Result()
+			resp, err := client.Do(req)
+			if err != nil {
+				b.Fatal(err)
+			}
 			io.Copy(io.Discard, resp.Body)
 			resp.Body.Close()
 		}
 	})
+
+	elapsed := time.Since(startTime)
+	totalRequests := float64(b.N)
+	throughput := totalRequests / elapsed.Seconds()
+	b.ReportMetric(throughput, "req/s")
 }
 
+func mustNewRequest(method, url string, body io.Reader) *http.Request {
+	req, err := http.NewRequest(method, url, body)
+	if err != nil {
+		panic(err)
+	}
+	return req
+}
+
+// BenchmarkRouter_HeavyMiddleware measures performance with middleware that does significant work.
 func BenchmarkRouter_HeavyMiddleware(b *testing.B) {
 	b.ReportAllocs()
 	router := NewRouter[CustomData]()
@@ -390,35 +575,61 @@ func BenchmarkRouter_HeavyMiddleware(b *testing.B) {
 		ctx.ResponseWriter.Write([]byte("OK"))
 	})
 
-	req := httptest.NewRequest("GET", "/heavy", nil)
+	// Use an actual HTTP server
+	server := httptest.NewServer(router)
+	defer server.Close()
+
+	client := &http.Client{}
+	req, _ := http.NewRequest("GET", server.URL+"/heavy", nil)
 
 	b.ResetTimer()
+	startTime := time.Now()
+
 	for i := 0; i < b.N; i++ {
-		w := httptest.NewRecorder()
-		router.ServeHTTP(w, req)
-		resp := w.Result()
+		resp, err := client.Do(req)
+		if err != nil {
+			b.Fatal(err)
+		}
 		io.Copy(io.Discard, resp.Body)
 		resp.Body.Close()
 	}
+
+	elapsed := time.Since(startTime)
+	throughput := float64(b.N) / elapsed.Seconds()
+	b.ReportMetric(throughput, "req/s")
 }
 
+// BenchmarkRouter_NotFound measures performance when handling 404 Not Found errors.
 func BenchmarkRouter_NotFound(b *testing.B) {
 	b.ReportAllocs()
 	router := NewRouter[CustomData]()
 	// No routes added
 
-	req := httptest.NewRequest("GET", "/nonexistent", nil)
+	// Use an actual HTTP server
+	server := httptest.NewServer(router)
+	defer server.Close()
+
+	client := &http.Client{}
+	req, _ := http.NewRequest("GET", server.URL+"/nonexistent", nil)
 
 	b.ResetTimer()
+	startTime := time.Now()
+
 	for i := 0; i < b.N; i++ {
-		w := httptest.NewRecorder()
-		router.ServeHTTP(w, req)
-		resp := w.Result()
+		resp, err := client.Do(req)
+		if err != nil {
+			b.Fatal(err)
+		}
 		io.Copy(io.Discard, resp.Body)
 		resp.Body.Close()
 	}
+
+	elapsed := time.Since(startTime)
+	throughput := float64(b.N) / elapsed.Seconds()
+	b.ReportMetric(throughput, "req/s")
 }
 
+// BenchmarkRouter_WithQueryParameters measures performance when handling query parameters.
 func BenchmarkRouter_WithQueryParameters(b *testing.B) {
 	b.ReportAllocs()
 	router := NewRouter[CustomData]()
@@ -427,18 +638,31 @@ func BenchmarkRouter_WithQueryParameters(b *testing.B) {
 		ctx.ResponseWriter.Write([]byte("Query: " + query))
 	})
 
-	req := httptest.NewRequest("GET", "/search?q=test", nil)
+	// Use an actual HTTP server
+	server := httptest.NewServer(router)
+	defer server.Close()
+
+	client := &http.Client{}
+	req, _ := http.NewRequest("GET", server.URL+"/search?q=test", nil)
 
 	b.ResetTimer()
+	startTime := time.Now()
+
 	for i := 0; i < b.N; i++ {
-		w := httptest.NewRecorder()
-		router.ServeHTTP(w, req)
-		resp := w.Result()
+		resp, err := client.Do(req)
+		if err != nil {
+			b.Fatal(err)
+		}
 		io.Copy(io.Discard, resp.Body)
 		resp.Body.Close()
 	}
+
+	elapsed := time.Since(startTime)
+	throughput := float64(b.N) / elapsed.Seconds()
+	b.ReportMetric(throughput, "req/s")
 }
 
+// BenchmarkRouter_DeepRoute measures performance with deeply nested routes.
 func BenchmarkRouter_DeepRoute(b *testing.B) {
 	b.ReportAllocs()
 	router := NewRouter[CustomData]()
@@ -446,18 +670,31 @@ func BenchmarkRouter_DeepRoute(b *testing.B) {
 		ctx.ResponseWriter.Write([]byte("Deep Route"))
 	})
 
-	req := httptest.NewRequest("GET", "/level1/level2/level3/level4/level5", nil)
+	// Use an actual HTTP server
+	server := httptest.NewServer(router)
+	defer server.Close()
+
+	client := &http.Client{}
+	req, _ := http.NewRequest("GET", server.URL+"/level1/level2/level3/level4/level5", nil)
 
 	b.ResetTimer()
+	startTime := time.Now()
+
 	for i := 0; i < b.N; i++ {
-		w := httptest.NewRecorder()
-		router.ServeHTTP(w, req)
-		resp := w.Result()
+		resp, err := client.Do(req)
+		if err != nil {
+			b.Fatal(err)
+		}
 		io.Copy(io.Discard, resp.Body)
 		resp.Body.Close()
 	}
+
+	elapsed := time.Since(startTime)
+	throughput := float64(b.N) / elapsed.Seconds()
+	b.ReportMetric(throughput, "req/s")
 }
 
+// BenchmarkRouter_RouteConflicts measures performance when routes have potential conflicts.
 func BenchmarkRouter_RouteConflicts(b *testing.B) {
 	b.ReportAllocs()
 	router := NewRouter[CustomData]()
@@ -468,51 +705,80 @@ func BenchmarkRouter_RouteConflicts(b *testing.B) {
 		ctx.ResponseWriter.Write([]byte("Order By Route"))
 	})
 
-	reqUUID := httptest.NewRequest("GET", "/public/MessageExport/uuid/123e4567-e89b-12d3-a456-426614174000", nil)
-	reqOrder := httptest.NewRequest("GET", "/public/MessageExport/order/asc", nil)
+	// Use an actual HTTP server
+	server := httptest.NewServer(router)
+	defer server.Close()
+
+	client := &http.Client{}
+	reqUUID, _ := http.NewRequest("GET", server.URL+"/public/MessageExport/uuid/123e4567-e89b-12d3-a456-426614174000", nil)
+	reqOrder, _ := http.NewRequest("GET", server.URL+"/public/MessageExport/order/asc", nil)
 
 	b.Run("UUID", func(b *testing.B) {
 		b.ResetTimer()
+		startTime := time.Now()
 		for i := 0; i < b.N; i++ {
-			w := httptest.NewRecorder()
-			router.ServeHTTP(w, reqUUID)
-			resp := w.Result()
+			resp, err := client.Do(reqUUID)
+			if err != nil {
+				b.Fatal(err)
+			}
 			io.Copy(io.Discard, resp.Body)
 			resp.Body.Close()
 		}
+		elapsed := time.Since(startTime)
+		throughput := float64(b.N) / elapsed.Seconds()
+		b.ReportMetric(throughput, "req/s")
 	})
 
 	b.Run("OrderBy", func(b *testing.B) {
 		b.ResetTimer()
+		startTime := time.Now()
 		for i := 0; i < b.N; i++ {
-			w := httptest.NewRecorder()
-			router.ServeHTTP(w, reqOrder)
-			resp := w.Result()
+			resp, err := client.Do(reqOrder)
+			if err != nil {
+				b.Fatal(err)
+			}
 			io.Copy(io.Discard, resp.Body)
 			resp.Body.Close()
 		}
+		elapsed := time.Since(startTime)
+		throughput := float64(b.N) / elapsed.Seconds()
+		b.ReportMetric(throughput, "req/s")
 	})
 }
 
+// BenchmarkRouter_WildcardRoute measures performance when using wildcard routes.
 func BenchmarkRouter_WildcardRoute(b *testing.B) {
 	b.ReportAllocs()
 	router := NewRouter[CustomData]()
-	router.GET("/static/*filepath", func(ctx *Ctx[CustomData]) {
+	router.GET("/files/*filepath", func(ctx *Ctx[CustomData]) {
 		ctx.ResponseWriter.Write([]byte("Filepath: " + ctx.Params["filepath"]))
 	})
 
-	req := httptest.NewRequest("GET", "/static/css/style.css", nil)
+	// Use an actual HTTP server
+	server := httptest.NewServer(router)
+	defer server.Close()
+
+	client := &http.Client{}
+	req, _ := http.NewRequest("GET", server.URL+"/files/test.txt", nil)
 
 	b.ResetTimer()
+	startTime := time.Now()
+
 	for i := 0; i < b.N; i++ {
-		w := httptest.NewRecorder()
-		router.ServeHTTP(w, req)
-		resp := w.Result()
+		resp, err := client.Do(req)
+		if err != nil {
+			b.Fatal(err)
+		}
 		io.Copy(io.Discard, resp.Body)
 		resp.Body.Close()
 	}
+
+	elapsed := time.Since(startTime)
+	throughput := float64(b.N) / elapsed.Seconds()
+	b.ReportMetric(throughput, "req/s")
 }
 
+// BenchmarkRouter_ParameterizedRoute measures performance when using parameterized routes.
 func BenchmarkRouter_ParameterizedRoute(b *testing.B) {
 	b.ReportAllocs()
 	router := NewRouter[CustomData]()
@@ -520,14 +786,109 @@ func BenchmarkRouter_ParameterizedRoute(b *testing.B) {
 		ctx.ResponseWriter.Write([]byte("User ID: " + ctx.Params["id"]))
 	})
 
-	req := httptest.NewRequest("GET", "/user/12345", nil)
+	// Use an actual HTTP server
+	server := httptest.NewServer(router)
+	defer server.Close()
+
+	client := &http.Client{}
+	req, _ := http.NewRequest("GET", server.URL+"/user/12345", nil)
 
 	b.ResetTimer()
+	startTime := time.Now()
+
 	for i := 0; i < b.N; i++ {
-		w := httptest.NewRecorder()
-		router.ServeHTTP(w, req)
-		resp := w.Result()
+		resp, err := client.Do(req)
+		if err != nil {
+			b.Fatal(err)
+		}
 		io.Copy(io.Discard, resp.Body)
 		resp.Body.Close()
 	}
+
+	elapsed := time.Since(startTime)
+	throughput := float64(b.N) / elapsed.Seconds()
+	b.ReportMetric(throughput, "req/s")
+}
+
+// Additional benchmark: BenchmarkRouter_StaticFileServing
+// Measures performance when serving static files.
+func BenchmarkRouter_StaticFileServing(b *testing.B) {
+	b.ReportAllocs()
+	router := NewRouter[CustomData]()
+
+	// Simulate a static file handler
+	router.GET("/files/*filepath", func(ctx *Ctx[CustomData]) {
+		// Simulate reading a file (without actual disk I/O)
+		data := []byte("File content")
+		ctx.ResponseWriter.Write(data)
+	})
+
+	// Use an actual HTTP server
+	server := httptest.NewServer(router)
+	defer server.Close()
+
+	client := &http.Client{}
+	req, _ := http.NewRequest("GET", server.URL+"/files/test.txt", nil)
+
+	b.ResetTimer()
+	startTime := time.Now()
+
+	for i := 0; i < b.N; i++ {
+		resp, err := client.Do(req)
+		if err != nil {
+			b.Fatal(err)
+		}
+		io.ReadAll(resp.Body)
+		resp.Body.Close()
+	}
+
+	elapsed := time.Since(startTime)
+	throughput := float64(b.N) / elapsed.Seconds()
+	b.ReportMetric(throughput, "req/s")
+}
+
+// Additional benchmark: BenchmarkRouter_FileServerIntegration
+// Measures performance when integrating with http.FileServer.
+func BenchmarkRouter_FileServerIntegration(b *testing.B) {
+	b.ReportAllocs()
+	router := NewRouter[CustomData]()
+
+	fs := http.FileServer(http.Dir(".")) // Adjust the directory as needed
+	router.GET("/files/*filepath", func(ctx *Ctx[CustomData]) {
+		ctx.Request.URL.Path = ctx.Params["filepath"]
+		fs.ServeHTTP(ctx.ResponseWriter, ctx.Request)
+	})
+
+	// Create a temporary file to serve
+	fileContent := []byte("Sample file content")
+	tmpFile, err := os.CreateTemp("", "testfile*.txt")
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer os.Remove(tmpFile.Name())
+	tmpFile.Write(fileContent)
+	tmpFile.Close()
+
+	// Use an actual HTTP server
+	server := httptest.NewServer(router)
+	defer server.Close()
+
+	client := &http.Client{}
+	req, _ := http.NewRequest("GET", server.URL+"/files/"+tmpFile.Name(), nil)
+
+	b.ResetTimer()
+	startTime := time.Now()
+
+	for i := 0; i < b.N; i++ {
+		resp, err := client.Do(req)
+		if err != nil {
+			b.Fatal(err)
+		}
+		io.ReadAll(resp.Body)
+		resp.Body.Close()
+	}
+
+	elapsed := time.Since(startTime)
+	throughput := float64(b.N) / elapsed.Seconds()
+	b.ReportMetric(throughput, "req/s")
 }
