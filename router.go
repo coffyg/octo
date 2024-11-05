@@ -576,6 +576,7 @@ func (r *Router[V]) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		Query:          req.URL.Query(),
 	}
 	handler = applyMiddleware(handler, middlewareChain)
+	defer ctx.Done()
 
 	handler(ctx)
 }
