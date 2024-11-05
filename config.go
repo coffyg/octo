@@ -19,3 +19,12 @@ func SetupOCto(l *zerolog.Logger, mbs int64) {
 	logger = l
 	maxBodySize = mbs
 }
+func GetLogger() *zerolog.Logger {
+	return logger
+}
+func ChangeMaxBodySize(mbs int64) {
+	maxBodySize = mbs
+}
+func GetMaxBodySize() int64 {
+	return maxBodySize
+}
