@@ -460,6 +460,19 @@ func (c *Ctx[V]) FileFromFS(urlPath string, fs http.FileSystem, filePath string)
 	c.Done()
 }
 
+// FormValue retrieves form values from the request
+func (c *Ctx[V]) FormValue(key string) string {
+	if c.Request.Form == nil {
+		c.Request.ParseForm()
+	}
+	return c.Request.FormValue(key)
+}
+
+// SendString sends a string response
+func (c *Ctx[V]) SendString(statusCode int, s string) {
+	c.SendData(statusCode, "text/plain", []byte(s))
+}
+
 // APIError represents an API error with a message and HTTP status code
 type APIError struct {
 	Message string
