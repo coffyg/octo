@@ -315,7 +315,7 @@ func (c *Ctx[V]) NeedBody() error {
 	}
 
 	c.Request.Body.Close()
-	c.Request.Body = io.NopCloser(bytes.NewReader(body))
+	c.Request.Body = io.NopCloser(strings.NewReader(string(body)))
 	c.Body = body
 	return nil
 }
