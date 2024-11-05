@@ -309,6 +309,7 @@ func (c *Ctx[V]) NeedBody() error {
 		return nil
 	}
 	c.hasReadBody = true
+	c.ResponseWriter.CaptureBody = true
 
 	limitedReader := io.LimitReader(c.Request.Body, maxBodySize+1)
 	body, err := io.ReadAll(limitedReader)

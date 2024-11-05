@@ -22,6 +22,7 @@ func NewResponseWriterWrapper(w http.ResponseWriter) *ResponseWriterWrapper {
 		ResponseWriter: w,
 		Status:         http.StatusOK, // Default status code
 		Body:           &bytes.Buffer{},
+		CaptureBody:    false,
 	}
 }
 
