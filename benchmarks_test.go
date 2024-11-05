@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"runtime"
 	"runtime/debug"
 	"runtime/pprof"
 	"strconv"
@@ -507,8 +508,11 @@ func BenchmarkRouter_HighConcurrencyMultipleRoutes(b *testing.B) {
 	router := NewRouter[CustomData]()
 	paths := []string{"/route1", "/route2", "/route3", "/route4", "/route5"}
 
+	// Include processing delay in handlers
 	for _, path := range paths {
 		router.GET(path, func(ctx *Ctx[CustomData]) {
+			// Simulate processing delay
+			time.Sleep(100 * time.Microsecond)
 			ctx.ResponseWriter.Write([]byte("OK"))
 		})
 	}
@@ -891,4 +895,71 @@ func BenchmarkRouter_FileServerIntegration(b *testing.B) {
 	elapsed := time.Since(startTime)
 	throughput := float64(b.N) / elapsed.Seconds()
 	b.ReportMetric(throughput, "req/s")
+}
+
+func BenchmarkRouter_LatencyMetrics(b *testing.B) {
+	router := NewRouter[CustomData]()
+
+	router.GET("/test", func(ctx *Ctx[CustomData]) {
+		// Simulate processing delay
+		time.Sleep(100 * time.Microsecond)
+		ctx.ResponseWriter.Write([]byte("OK"))
+	})
+
+	server := httptest.NewServer(router)
+	defer server.Close()
+
+	client := &http.Client{}
+	req, _ := http.NewRequest("GET", server.URL+"/test", nil)
+
+	var totalDuration time.Duration
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		start := time.Now()
+		resp, err := client.Do(req)
+		if err != nil {
+			b.Fatal(err)
+		}
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+		duration := time.Since(start)
+		totalDuration += duration
+	}
+
+	avgLatency := totalDuration / time.Duration(b.N)
+	b.ReportMetric(float64(avgLatency.Microseconds()), "avg_latency_us")
+}
+
+func BenchmarkRouter_MemoryProfiled(b *testing.B) {
+	router := NewRouter[CustomData]()
+	router.GET("/memory", func(ctx *Ctx[CustomData]) {
+		ctx.ResponseWriter.Write([]byte("OK"))
+	})
+
+	server := httptest.NewServer(router)
+	defer server.Close()
+
+	client := &http.Client{}
+	req, _ := http.NewRequest("GET", server.URL+"/memory", nil)
+
+	f, err := os.Create("mem.prof")
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer f.Close()
+	runtime.GC() // get up-to-date statistics
+	if err := pprof.WriteHeapProfile(f); err != nil {
+		b.Fatal(err)
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		resp, err := client.Do(req)
+		if err != nil {
+			b.Fatal(err)
+		}
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+	}
 }
