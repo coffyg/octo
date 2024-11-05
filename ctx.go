@@ -150,13 +150,13 @@ func (c *Ctx[V]) Done() {
 	if c.done {
 		return
 	}
-	// Flush the response if possible
-	c.ResponseWriter.Flush()
-	// Close the request body if it's not nil
-	if c.Request.Body != nil {
-		c.Request.Body.Close()
-		c.Request.Body = nil
-	}
+	/*
+		c.ResponseWriter.Flush()
+		if c.Request.Body != nil {
+			c.Request.Body.Close()
+			c.Request.Body = nil
+		}
+	*/
 	c.done = true
 }
 
