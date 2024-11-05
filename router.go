@@ -1,7 +1,6 @@
 package octo
 
 import (
-	"bytes"
 	"fmt"
 	"net/http"
 	"runtime"
@@ -189,22 +188,20 @@ func (r *Router[V]) addRoute(method, path string, handler HandlerFunc[V], middle
 			continue
 		}
 
-		if part[0] == ':' || strings.Contains(part, ":") {
+		if strings.Contains(part, ":") {
 			// Handle embedded parameter
 			current, paramNames = r.addEmbeddedParameterNodeWithNames(current, part, paramNames)
 		} else if part[0] == '*' {
-			// Wildcard parameter
+			// Wildcard segment
 			paramName := part[1:]
 			paramNames = append(paramNames, paramName)
 			if current.wildcardChild == nil {
 				current.wildcardChild = &node[V]{parent: current}
 			}
 			current = current.wildcardChild
-			// Wildcard must be at the end
 			if i != len(parts)-1 {
 				panic("Wildcard route parameter must be at the end of the path")
 			}
-			break
 		} else {
 			// Static segment
 			if current.staticChildren == nil {
@@ -231,11 +228,6 @@ func (r *Router[V]) addRoute(method, path string, handler HandlerFunc[V], middle
 	middlewareChain := r.buildMiddlewareChain(current, middleware)
 
 	current.handlers[method] = &routeEntry[V]{handler: handler, paramNames: paramNames, middleware: middlewareChain}
-
-	// Assign route-specific middleware to the node (optional)
-	if len(middleware) > 0 {
-		current.middleware = append(current.middleware, middleware...)
-	}
 }
 
 // Helper function to handle embedded parameters during route addition
@@ -340,30 +332,24 @@ func (r *Router[V]) addEmbeddedParameterNode(current *node[V], part string) *nod
 
 func (r *Router[V]) buildMiddlewareChain(current *node[V], routeMiddleware []MiddlewareFunc[V]) []MiddlewareFunc[V] {
 	var middlewareChain []MiddlewareFunc[V]
-	// Collect middleware from nodes
+	middlewareChain = append(middlewareChain, r.preGroupMiddleware...)
+	middlewareChain = append(middlewareChain, r.middleware...)
+
+	// Collect middleware from parent nodes
+	var nodeMiddleware []MiddlewareFunc[V]
 	currentNode := current
-	var middlewareStack [][]MiddlewareFunc[V]
 	for currentNode != nil {
 		if len(currentNode.middleware) > 0 {
-			middlewareStack = append(middlewareStack, currentNode.middleware)
+			nodeMiddleware = append(nodeMiddleware, currentNode.middleware...)
 		}
 		currentNode = currentNode.parent
 	}
-	// Add router's middleware
-	if len(r.middleware) > 0 {
-		middlewareStack = append(middlewareStack, r.middleware)
+	// Reverse node middleware to maintain correct order
+	for i := len(nodeMiddleware) - 1; i >= 0; i-- {
+		middlewareChain = append(middlewareChain, nodeMiddleware[i])
 	}
-	if len(r.preGroupMiddleware) > 0 {
-		middlewareStack = append(middlewareStack, r.preGroupMiddleware)
-	}
-	// Flatten the middleware stack in the correct order
-	for i := len(middlewareStack) - 1; i >= 0; i-- {
-		middlewareChain = append(middlewareChain, middlewareStack[i]...)
-	}
-	// Add route-specific middleware
-	if len(routeMiddleware) > 0 {
-		middlewareChain = append(middlewareChain, routeMiddleware...)
-	}
+
+	middlewareChain = append(middlewareChain, routeMiddleware...)
 	return middlewareChain
 }
 
@@ -541,6 +527,7 @@ func applyMiddleware[V any](handler HandlerFunc[V], middleware []MiddlewareFunc[
 
 // ServeHTTP implements the http.Handler interface
 func (r *Router[V]) ServeHTTP(w http.ResponseWriter, req *http.Request) {
+
 	path := req.URL.Path
 	method := req.Method
 
@@ -561,11 +548,7 @@ func (r *Router[V]) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	}
 
 	// Wrap the ResponseWriter with ResponseWriterWrapper
-	responseWriter := &ResponseWriterWrapper{
-		ResponseWriter: w,
-		Status:         http.StatusOK, // default status code
-		Body:           &bytes.Buffer{},
-	}
+	responseWriter := NewResponseWriterWrapper(w)
 
 	ctx := &Ctx[V]{
 		ResponseWriter: responseWriter,
@@ -575,6 +558,7 @@ func (r *Router[V]) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		UUID:           uuid.NewString(),
 		Query:          req.URL.Query(),
 	}
+
 	handler = applyMiddleware(handler, middlewareChain)
 
 	handler(ctx)

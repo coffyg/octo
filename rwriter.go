@@ -11,9 +11,9 @@ import (
 // ResponseWriterWrapper wraps http.ResponseWriter and captures response data
 type ResponseWriterWrapper struct {
 	http.ResponseWriter
-	Status int
-	size   int
-	Body   *bytes.Buffer // Buffer to capture response body
+	Status      int
+	Body        *bytes.Buffer // Buffer to capture response body
+	CaptureBody bool
 }
 
 // NewResponseWriterWrapper initializes a new ResponseWriterWrapper
@@ -34,8 +34,7 @@ func (w *ResponseWriterWrapper) WriteHeader(statusCode int) {
 // Write captures the size and body of the response
 func (w *ResponseWriterWrapper) Write(data []byte) (int, error) {
 	size, err := w.ResponseWriter.Write(data)
-	w.size += size
-	if err == nil {
+	if w.CaptureBody && err == nil {
 		w.Body.Write(data) // Capture the response body
 	}
 	return size, err

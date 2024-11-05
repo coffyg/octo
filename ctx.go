@@ -166,15 +166,30 @@ func (c *Ctx[V]) IsDone() bool {
 
 // ClientIP returns the client's IP address, even if behind a proxy
 func (c *Ctx[V]) ClientIP() string {
-	if ip := c.GetHeader("X-Forwarded-For"); ip != "" {
-		if idx := strings.IndexByte(ip, ','); idx != -1 {
-			ip = ip[:idx]
+	// X-Forwarded-For may contain multiple IPs
+	ip := c.GetHeader("X-Forwarded-For")
+	if ip != "" {
+		ips := strings.Split(ip, ",")
+		for _, ip := range ips {
+			ip = strings.TrimSpace(ip)
+			parsedIP := net.ParseIP(ip)
+			if parsedIP != nil {
+				return ip
+			}
 		}
-		return strings.TrimSpace(ip)
 	}
-	if ip := c.GetHeader("X-Real-IP"); ip != "" {
-		return strings.TrimSpace(ip)
+
+	// Fallback to X-Real-IP
+	ip = c.GetHeader("X-Real-IP")
+	if ip != "" {
+		ip = strings.TrimSpace(ip)
+		parsedIP := net.ParseIP(ip)
+		if parsedIP != nil {
+			return ip
+		}
 	}
+
+	// Finally, use RemoteAddr
 	ip, _, err := net.SplitHostPort(strings.TrimSpace(c.Request.RemoteAddr))
 	if err != nil {
 		return c.Request.RemoteAddr
@@ -244,9 +259,6 @@ func (c *Ctx[V]) ShouldBindForm(obj interface{}) error {
 	if err != nil {
 		return err
 	}
-	// Reset Request.Body
-	c.Request.Body = io.NopCloser(bytes.NewReader(c.Body))
-
 	if err := c.Request.ParseForm(); err != nil {
 		return err
 	}
@@ -260,9 +272,6 @@ func (c *Ctx[V]) ShouldBindMultipartForm(obj interface{}) error {
 	if err != nil {
 		return err
 	}
-	// Reset Request.Body
-	c.Request.Body = io.NopCloser(bytes.NewReader(c.Body))
-
 	if err := c.Request.ParseMultipartForm(32 << 20); err != nil {
 		return err
 	}
@@ -291,7 +300,7 @@ func (c *Ctx[V]) ShouldBind(obj interface{}) error {
 	case "multipart/form-data":
 		return c.ShouldBindMultipartForm(obj)
 	default:
-		return errors.New("unsupported content type: " + contentType)
+		return fmt.Errorf("unsupported content type: %s", contentType)
 	}
 }
 
