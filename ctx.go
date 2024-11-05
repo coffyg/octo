@@ -81,6 +81,7 @@ func (c *Ctx[V]) SendJSON(statusCode int, v interface{}) {
 	if err != nil {
 		logger.Error().Err(err).Msg("[octo] failed to write response")
 	}
+	c.Done()
 }
 
 func (c *Ctx[V]) Param(key string) string {
@@ -376,6 +377,7 @@ func (c *Ctx[V]) Redirect(status int, url string) {
 		return
 	}
 	http.Redirect(c.ResponseWriter, c.Request, url, status)
+	c.Done()
 }
 
 // Send404 sends a 404 Not Found error response
@@ -428,6 +430,7 @@ func (c *Ctx[V]) SendData(statusCode int, contentType string, data []byte) {
 	if err != nil {
 		logger.Error().Err(err).Msg("[octo] failed to write data")
 	}
+	c.Done()
 }
 
 // Send a file as response
@@ -441,6 +444,7 @@ func (c *Ctx[V]) File(urlPath string, filePath string) {
 	}
 
 	http.ServeFile(c.ResponseWriter, c.Request, filePath)
+	c.Done()
 }
 
 // Send a file as response from a http.FileSystem
@@ -453,6 +457,7 @@ func (c *Ctx[V]) FileFromFS(urlPath string, fs http.FileSystem, filePath string)
 		return
 	}
 	http.FileServer(fs).ServeHTTP(c.ResponseWriter, c.Request)
+	c.Done()
 }
 
 // APIError represents an API error with a message and HTTP status code
