@@ -17,7 +17,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Fy-/octypes"
+	"github.com/coffyg/octypes"
+
 	"github.com/go-playground/form/v4"
 )
 

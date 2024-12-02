@@ -3,7 +3,7 @@ module github.com/coffyg/octo
 go 1.23.0
 
 require (
-	github.com/Fy-/octypes v0.0.1
+	github.com/coffyg/octypes v0.0.2
 	github.com/go-playground/form/v4 v4.2.1
 	github.com/google/uuid v1.6.0
 	github.com/pkg/errors v0.9.1
