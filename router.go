@@ -603,13 +603,13 @@ func RecoveryMiddleware[V any]() MiddlewareFunc[V] {
 								Str("method", ctx.Request.Method).Msg("[octo-panic] Client aborted request (panic recovered)")
 							return
 						}
-
 						logger.Error().
 							Err(wrappedErr).
 							Stack().
 							Array("stack_array", zStack).
 							Str("path", ctx.Request.URL.Path).
 							Str("method", ctx.Request.Method).
+							Str("ip", ctx.ClientIP()).
 							Msg("[octo-panic] Panic recovered")
 					}
 					// Optionally, send an HTTP 500 response
