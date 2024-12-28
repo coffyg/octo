@@ -18,10 +18,16 @@ type ResponseWriterWrapper struct {
 
 // NewResponseWriterWrapper initializes a new ResponseWriterWrapper
 func NewResponseWriterWrapper(w http.ResponseWriter) *ResponseWriterWrapper {
+	// If DeferBufferAllocation = false, allocate immediately
+	var buf *bytes.Buffer
+	if !DeferBufferAllocation {
+		buf = &bytes.Buffer{}
+	}
+
 	return &ResponseWriterWrapper{
 		ResponseWriter: w,
 		Status:         http.StatusOK, // Default status code
-		Body:           &bytes.Buffer{},
+		Body:           buf,           // can be nil if defer-alloc is true
 		CaptureBody:    false,
 	}
 }
@@ -36,7 +42,11 @@ func (w *ResponseWriterWrapper) WriteHeader(statusCode int) {
 func (w *ResponseWriterWrapper) Write(data []byte) (int, error) {
 	size, err := w.ResponseWriter.Write(data)
 	if w.CaptureBody && err == nil {
-		w.Body.Write(data) // Capture the response body
+		// Only allocate buffer if we REALLY need it
+		if w.Body == nil {
+			w.Body = &bytes.Buffer{}
+		}
+		w.Body.Write(data)
 	}
 	return size, err
 }
@@ -63,5 +73,3 @@ func (w *ResponseWriterWrapper) Push(target string, opts *http.PushOptions) erro
 	}
 	return http.ErrNotSupported
 }
-
-// Removed CloseNotify method as it is deprecated

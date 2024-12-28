@@ -18,7 +18,6 @@ import (
 	"time"
 
 	"github.com/coffyg/octypes"
-
 	"github.com/go-playground/form/v4"
 )
 
@@ -80,7 +79,13 @@ func (c *Ctx[V]) SendJSON(statusCode int, v interface{}) {
 	c.SetStatus(statusCode)
 	_, err = c.ResponseWriter.Write(response)
 	if err != nil {
-		logger.Error().Err(err).Msg("[octo] failed to write response")
+		if EnableLoggerCheck {
+			if logger != nil {
+				logger.Error().Err(err).Msg("[octo] failed to write response")
+			}
+		} else {
+			logger.Error().Err(err).Msg("[octo] failed to write response") // Potential panic if logger==nil
+		}
 	}
 	c.Done()
 }
@@ -89,7 +94,6 @@ func (c *Ctx[V]) Param(key string) string {
 	if value, ok := c.Params[key]; ok {
 		return value
 	}
-
 	return ""
 }
 
@@ -97,7 +101,6 @@ func (c *Ctx[V]) QueryParam(key string) string {
 	if value, ok := c.Params[key]; ok {
 		return value
 	}
-
 	values := c.Request.URL.Query()[key]
 	if len(values) > 0 {
 		return values[0]
@@ -109,12 +112,10 @@ func (c *Ctx[V]) DefaultQueryParam(key, defaultValue string) string {
 	if value, ok := c.Params[key]; ok {
 		return value
 	}
-
 	values := c.Request.URL.Query()[key]
 	if len(values) > 0 {
 		return values[0]
 	}
-
 	return defaultValue
 }
 
@@ -131,7 +132,6 @@ func (c *Ctx[V]) DefaultQuery(key, defaultValue string) string {
 	if len(values) > 0 {
 		return values[0]
 	}
-
 	return defaultValue
 }
 
@@ -151,13 +151,6 @@ func (c *Ctx[V]) Done() {
 	if c.done {
 		return
 	}
-	/*
-		c.ResponseWriter.Flush()
-		if c.Request.Body != nil {
-			c.Request.Body.Close()
-			c.Request.Body = nil
-		}
-	*/
 	c.done = true
 }
 
@@ -167,7 +160,6 @@ func (c *Ctx[V]) IsDone() bool {
 
 // ClientIP returns the client's IP address, even if behind a proxy
 func (c *Ctx[V]) ClientIP() string {
-	// X-Forwarded-For may contain multiple IPs
 	ip := c.GetHeader("X-Forwarded-For")
 	if ip != "" {
 		ips := strings.Split(ip, ",")
@@ -179,8 +171,6 @@ func (c *Ctx[V]) ClientIP() string {
 			}
 		}
 	}
-
-	// Fallback to X-Real-IP
 	ip = c.GetHeader("X-Real-IP")
 	if ip != "" {
 		ip = strings.TrimSpace(ip)
@@ -189,8 +179,6 @@ func (c *Ctx[V]) ClientIP() string {
 			return ip
 		}
 	}
-
-	// Finally, use RemoteAddr
 	ip, _, err := net.SplitHostPort(strings.TrimSpace(c.Request.RemoteAddr))
 	if err != nil {
 		return c.Request.RemoteAddr
@@ -315,14 +303,26 @@ func (c *Ctx[V]) NeedBody() error {
 	limitedReader := io.LimitReader(c.Request.Body, maxBodySize+1)
 	body, err := io.ReadAll(limitedReader)
 	if err != nil {
-		logger.Error().Err(err).Msg("[octo] failed to read request body")
+		if EnableLoggerCheck {
+			if logger != nil {
+				logger.Error().Err(err).Msg("[octo] failed to read request body")
+			}
+		} else {
+			logger.Error().Err(err).Msg("[octo] failed to read request body") // Potential panic if logger == nil
+		}
 		return err
 	}
 
 	if int64(len(body)) > maxBodySize {
-		err := errors.New("request body too large")
-		logger.Error().Err(err).Msg("[octo] request body exceeds maximum allowed size")
-		return err
+		tooLargeErr := errors.New("request body too large")
+		if EnableLoggerCheck {
+			if logger != nil {
+				logger.Error().Err(tooLargeErr).Msg("[octo] request body exceeds maximum allowed size")
+			}
+		} else {
+			logger.Error().Err(tooLargeErr).Msg("[octo] request body exceeds maximum allowed size")
+		}
+		return tooLargeErr
 	}
 
 	c.Request.Body.Close()
@@ -345,7 +345,13 @@ func (c *Ctx[V]) SendError(code string, err error) {
 		message += ": " + err.Error()
 		if pc, file, line, ok := runtime.Caller(1); ok {
 			funcName := runtime.FuncForPC(pc).Name()
-			logger.Error().Err(err).Msgf("[octo-error] error: %s in %s:%d %s", err.Error(), file, line, funcName)
+			if EnableLoggerCheck {
+				if logger != nil {
+					logger.Error().Err(err).Msgf("[octo-error] error: %s in %s:%d %s", err.Error(), file, line, funcName)
+				}
+			} else {
+				logger.Error().Err(err).Msgf("[octo-error] error: %s in %s:%d %s", err.Error(), file, line, funcName)
+			}
 		}
 	}
 	result := BaseResult{
@@ -371,7 +377,13 @@ func (c *Ctx[V]) SendErrorStatus(statusCode int, code string, err error) {
 		message += ": " + err.Error()
 		if pc, file, line, ok := runtime.Caller(1); ok {
 			funcName := runtime.FuncForPC(pc).Name()
-			logger.Error().Err(err).Msgf("[octo-error] error: %s in %s:%d %s", err.Error(), file, line, funcName)
+			if EnableLoggerCheck {
+				if logger != nil {
+					logger.Error().Err(err).Msgf("[octo-error] error: %s in %s:%d %s", err.Error(), file, line, funcName)
+				}
+			} else {
+				logger.Error().Err(err).Msgf("[octo-error] error: %s in %s:%d %s", err.Error(), file, line, funcName)
+			}
 		}
 	}
 	result := BaseResult{
@@ -439,7 +451,13 @@ func (c *Ctx[V]) SendData(statusCode int, contentType string, data []byte) {
 	c.SetStatus(statusCode)
 	_, err := c.ResponseWriter.Write(data)
 	if err != nil {
-		logger.Error().Err(err).Msg("[octo] failed to write data")
+		if EnableLoggerCheck {
+			if logger != nil {
+				logger.Error().Err(err).Msg("[octo] failed to write data")
+			}
+		} else {
+			logger.Error().Err(err).Msg("[octo] failed to write data")
+		}
 	}
 	c.Done()
 }
@@ -453,7 +471,6 @@ func (c *Ctx[V]) File(urlPath string, filePath string) {
 		c.SendError("err_internal_error", fmt.Errorf("file path is empty"))
 		return
 	}
-
 	http.ServeFile(c.ResponseWriter, c.Request, filePath)
 	c.Done()
 }
@@ -500,7 +517,6 @@ type BaseResult struct {
 	Token   string              `json:"token,omitempty"`
 }
 
-// APIErrors is a map of error codes to APIError structs
 var APIErrors = map[string]*APIError{
 	"err_unknown_error":            {"Unknown error", http.StatusInternalServerError},
 	"err_internal_error":           {"Internal error", http.StatusInternalServerError},

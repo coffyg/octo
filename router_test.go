@@ -405,3 +405,64 @@ func TestRouter_PanicRecovery(t *testing.T) {
 	// For example, expecting JSON with "result": "error" and "message": "Internal error"
 	// You can decode the JSON and assert the fields accordingly
 }
+func TestSecurityHeaders(t *testing.T) {
+	// Save the old setting
+	oldVal := EnableSecurityHeaders
+
+	// Create a new router
+	router := NewRouter[CustomData]()
+
+	// Basic route
+	router.GET("/test", func(ctx *Ctx[CustomData]) {
+		ctx.ResponseWriter.Write([]byte("Hello"))
+	})
+
+	// 1) Security headers DISABLED
+	EnableSecurityHeaders = false
+	req := httptest.NewRequest("GET", "/test", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	resp := w.Result()
+	if resp.Header.Get("X-Content-Type-Options") != "" {
+		t.Errorf("Expected no X-Content-Type-Options when security headers disabled")
+	}
+
+	// 2) Security headers ENABLED
+	EnableSecurityHeaders = true
+	req = httptest.NewRequest("GET", "/test", nil)
+	w = httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	resp = w.Result()
+
+	if resp.Header.Get("X-Content-Type-Options") != "nosniff" {
+		t.Errorf("Expected 'nosniff', got '%s'", resp.Header.Get("X-Content-Type-Options"))
+	}
+	if resp.Header.Get("X-Frame-Options") != "DENY" {
+		t.Errorf("Expected 'DENY', got '%s'", resp.Header.Get("X-Frame-Options"))
+	}
+	if resp.Header.Get("X-XSS-Protection") != "1; mode=block" {
+		t.Errorf("Expected '1; mode=block', got '%s'", resp.Header.Get("X-XSS-Protection"))
+	}
+
+	// Restore
+	EnableSecurityHeaders = oldVal
+}
+func TestDeferBufferAllocation(t *testing.T) {
+	oldVal := DeferBufferAllocation
+	defer func() { DeferBufferAllocation = oldVal }()
+
+	// If DeferBufferAllocation = false, we expect a non-nil Body in the wrapper immediately
+	DeferBufferAllocation = false
+	rw := NewResponseWriterWrapper(httptest.NewRecorder())
+	if rw.Body == nil {
+		t.Errorf("Expected Body to be allocated immediately when DeferBufferAllocation=false")
+	}
+
+	// If DeferBufferAllocation = true, we expect a nil Body initially
+	DeferBufferAllocation = true
+	rw = NewResponseWriterWrapper(httptest.NewRecorder())
+	if rw.Body != nil {
+		t.Errorf("Expected Body to be nil initially when DeferBufferAllocation=true")
+	}
+}

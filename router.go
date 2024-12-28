@@ -14,11 +14,13 @@ import (
 
 type HandlerFunc[V any] func(*Ctx[V])
 type MiddlewareFunc[V any] func(HandlerFunc[V]) HandlerFunc[V]
+
 type routeEntry[V any] struct {
 	handler    HandlerFunc[V]
 	paramNames []string
 	middleware []MiddlewareFunc[V]
 }
+
 type node[V any] struct {
 	staticChildren map[string]*node[V]
 	paramChild     *node[V]
@@ -82,8 +84,8 @@ func (r *Router[V]) HEAD(path string, handler HandlerFunc[V], middleware ...Midd
 
 func (r *Router[V]) ANY(path string, handler HandlerFunc[V], middleware ...MiddlewareFunc[V]) {
 	methods := []string{"GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD"}
-	for _, method := range methods {
-		r.addRoute(method, path, handler, middleware...)
+	for _, m := range methods {
+		r.addRoute(m, path, handler, middleware...)
 	}
 }
 
@@ -117,7 +119,6 @@ func (r *Router[V]) Group(prefix string, middleware ...MiddlewareFunc[V]) *Group
 			}
 			current = current.staticChildren[part]
 		}
-		// No middleware assignment to nodes
 	}
 	return &Group[V]{
 		prefix:     prefix,
@@ -177,7 +178,7 @@ func (g *Group[V]) ANY(path string, handler HandlerFunc[V], middleware ...Middle
 }
 
 // addRoute adds a route with associated handler and middleware
-func (r *Router[V]) addRoute(method, path string, handler HandlerFunc[V], middleware ...MiddlewareFunc[V]) {
+func (r *Router[V]) addRoute(method, path string, handler HandlerFunc[V], routeMW ...MiddlewareFunc[V]) {
 	parts := splitPath(path)
 	current := r.root
 
@@ -187,9 +188,7 @@ func (r *Router[V]) addRoute(method, path string, handler HandlerFunc[V], middle
 		if part == "" {
 			continue
 		}
-
 		if strings.Contains(part, ":") {
-			// Handle embedded parameter
 			current, paramNames = r.addEmbeddedParameterNodeWithNames(current, part, paramNames)
 		} else if part[0] == '*' {
 			// Wildcard segment
@@ -203,7 +202,6 @@ func (r *Router[V]) addRoute(method, path string, handler HandlerFunc[V], middle
 				panic("Wildcard route parameter must be at the end of the path")
 			}
 		} else {
-			// Static segment
 			if current.staticChildren == nil {
 				current.staticChildren = make(map[string]*node[V])
 			}
@@ -225,44 +223,41 @@ func (r *Router[V]) addRoute(method, path string, handler HandlerFunc[V], middle
 	current.isLeaf = true
 
 	// Build the middleware chain
-	middlewareChain := r.buildMiddlewareChain(current, middleware)
-
-	current.handlers[method] = &routeEntry[V]{handler: handler, paramNames: paramNames, middleware: middlewareChain}
+	middlewareChain := r.buildMiddlewareChain(current, routeMW)
+	current.handlers[method] = &routeEntry[V]{
+		handler:    handler,
+		paramNames: paramNames,
+		middleware: middlewareChain,
+	}
 }
 
-// Helper function to handle embedded parameters during route addition
-func (r *Router[V]) addEmbeddedParameterNodeWithNames(current *node[V], part string, paramNames []string) (*node[V], []string) {
+func (r *Router[V]) addEmbeddedParameterNodeWithNames(cur *node[V], part string, paramNames []string) (*node[V], []string) {
 	for {
 		if part == "" {
 			break
 		}
-
 		idx := strings.IndexByte(part, ':')
 		if idx == -1 {
 			// Remaining part is static
-			if current.staticChildren == nil {
-				current.staticChildren = make(map[string]*node[V])
+			if cur.staticChildren == nil {
+				cur.staticChildren = make(map[string]*node[V])
 			}
-			if current.staticChildren[part] == nil {
-				current.staticChildren[part] = &node[V]{parent: current}
+			if cur.staticChildren[part] == nil {
+				cur.staticChildren[part] = &node[V]{parent: cur}
 			}
-			current = current.staticChildren[part]
+			cur = cur.staticChildren[part]
 			break
 		}
-
-		// Static part before ':'
 		if idx > 0 {
 			staticPart := part[:idx]
-			if current.staticChildren == nil {
-				current.staticChildren = make(map[string]*node[V])
+			if cur.staticChildren == nil {
+				cur.staticChildren = make(map[string]*node[V])
 			}
-			if current.staticChildren[staticPart] == nil {
-				current.staticChildren[staticPart] = &node[V]{parent: current}
+			if cur.staticChildren[staticPart] == nil {
+				cur.staticChildren[staticPart] = &node[V]{parent: cur}
 			}
-			current = current.staticChildren[staticPart]
+			cur = cur.staticChildren[staticPart]
 		}
-
-		// Parameter part after ':'
 		part = part[idx+1:]
 		var paramName string
 		nextIdx := strings.IndexAny(part, ":*")
@@ -274,47 +269,40 @@ func (r *Router[V]) addEmbeddedParameterNodeWithNames(current *node[V], part str
 			part = ""
 		}
 		paramNames = append(paramNames, paramName)
-		if current.paramChild == nil {
-			current.paramChild = &node[V]{parent: current}
+		if cur.paramChild == nil {
+			cur.paramChild = &node[V]{parent: cur}
 		}
-		current = current.paramChild
+		cur = cur.paramChild
 	}
-	return current, paramNames
+	return cur, paramNames
 }
 
-// Helper function to handle embedded parameters in group prefixes
-func (r *Router[V]) addEmbeddedParameterNode(current *node[V], part string) *node[V] {
+func (r *Router[V]) addEmbeddedParameterNode(cur *node[V], part string) *node[V] {
 	for {
 		if part == "" {
 			break
 		}
-
 		idx := strings.IndexByte(part, ':')
 		if idx == -1 {
-			// Remaining part is static
-			if current.staticChildren == nil {
-				current.staticChildren = make(map[string]*node[V])
+			if cur.staticChildren == nil {
+				cur.staticChildren = make(map[string]*node[V])
 			}
-			if current.staticChildren[part] == nil {
-				current.staticChildren[part] = &node[V]{parent: current}
+			if cur.staticChildren[part] == nil {
+				cur.staticChildren[part] = &node[V]{parent: cur}
 			}
-			current = current.staticChildren[part]
+			cur = cur.staticChildren[part]
 			break
 		}
-
-		// Static part before ':'
 		if idx > 0 {
 			staticPart := part[:idx]
-			if current.staticChildren == nil {
-				current.staticChildren = make(map[string]*node[V])
+			if cur.staticChildren == nil {
+				cur.staticChildren = make(map[string]*node[V])
 			}
-			if current.staticChildren[staticPart] == nil {
-				current.staticChildren[staticPart] = &node[V]{parent: current}
+			if cur.staticChildren[staticPart] == nil {
+				cur.staticChildren[staticPart] = &node[V]{parent: cur}
 			}
-			current = current.staticChildren[staticPart]
+			cur = cur.staticChildren[staticPart]
 		}
-
-		// Parameter part after ':'
 		part = part[idx+1:]
 		nextIdx := strings.IndexAny(part, ":*")
 		if nextIdx != -1 {
@@ -322,49 +310,47 @@ func (r *Router[V]) addEmbeddedParameterNode(current *node[V], part string) *nod
 		} else {
 			part = ""
 		}
-		if current.paramChild == nil {
-			current.paramChild = &node[V]{parent: current}
+		if cur.paramChild == nil {
+			cur.paramChild = &node[V]{parent: cur}
 		}
-		current = current.paramChild
+		cur = cur.paramChild
 	}
-	return current
+	return cur
 }
 
-func (r *Router[V]) buildMiddlewareChain(current *node[V], routeMiddleware []MiddlewareFunc[V]) []MiddlewareFunc[V] {
-	var middlewareChain []MiddlewareFunc[V]
-	middlewareChain = append(middlewareChain, r.preGroupMiddleware...)
-	middlewareChain = append(middlewareChain, r.middleware...)
+func (r *Router[V]) buildMiddlewareChain(cur *node[V], routeMW []MiddlewareFunc[V]) []MiddlewareFunc[V] {
+	var chain []MiddlewareFunc[V]
+	chain = append(chain, r.preGroupMiddleware...)
+	chain = append(chain, r.middleware...)
 
-	// Collect middleware from parent nodes
-	var nodeMiddleware []MiddlewareFunc[V]
-	currentNode := current
-	for currentNode != nil {
-		if len(currentNode.middleware) > 0 {
-			nodeMiddleware = append(nodeMiddleware, currentNode.middleware...)
+	// collect middleware from parent nodes
+	var nodeMW []MiddlewareFunc[V]
+	temp := cur
+	for temp != nil {
+		if len(temp.middleware) > 0 {
+			nodeMW = append(nodeMW, temp.middleware...)
 		}
-		currentNode = currentNode.parent
+		temp = temp.parent
 	}
-	// Reverse node middleware to maintain correct order
-	for i := len(nodeMiddleware) - 1; i >= 0; i-- {
-		middlewareChain = append(middlewareChain, nodeMiddleware[i])
+	// reverse them so parent-most is first
+	for i := len(nodeMW) - 1; i >= 0; i-- {
+		chain = append(chain, nodeMW[i])
 	}
-
-	middlewareChain = append(middlewareChain, routeMiddleware...)
-	return middlewareChain
+	chain = append(chain, routeMW...)
+	return chain
 }
 
 func (r *Router[V]) globalMiddlewareChain() []MiddlewareFunc[V] {
-	var middlewareChain []MiddlewareFunc[V]
+	var chain []MiddlewareFunc[V]
 	if len(r.preGroupMiddleware) > 0 {
-		middlewareChain = append(middlewareChain, r.preGroupMiddleware...)
+		chain = append(chain, r.preGroupMiddleware...)
 	}
 	if len(r.middleware) > 0 {
-		middlewareChain = append(middlewareChain, r.middleware...)
+		chain = append(chain, r.middleware...)
 	}
-	return middlewareChain
+	return chain
 }
 
-// splitPath splits the path into segments without allocating unnecessary memory
 func splitPath(path string) []string {
 	if path == "" || path == "/" {
 		return nil
@@ -372,7 +358,6 @@ func splitPath(path string) []string {
 	if path[0] == '/' {
 		path = path[1:]
 	}
-	// Count segments to preallocate slice
 	segmentCount := 1
 	for i := 0; i < len(path); i++ {
 		if path[i] == '/' {
@@ -392,45 +377,81 @@ func splitPath(path string) []string {
 	return parts
 }
 
-// search finds the handler and middleware chain for a given request
+// ServeHTTP implements the http.Handler interface
+func (r *Router[V]) ServeHTTP(w http.ResponseWriter, req *http.Request) {
+	path := req.URL.Path
+	method := req.Method
+
+	// 3) Optionally add security headers
+	if EnableSecurityHeaders {
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("X-Frame-Options", "DENY")
+		w.Header().Set("X-XSS-Protection", "1; mode=block")
+	}
+
+	handler, middlewareChain, params, ok := r.search(method, path)
+	if !ok {
+		handler = func(ctx *Ctx[V]) {
+			if req.Method == "OPTIONS" {
+				w.Header().Set("Allow", "GET, POST, PUT, DELETE, PATCH, OPTIONS, HEAD")
+				w.WriteHeader(http.StatusOK)
+				return
+			}
+			http.NotFound(ctx.ResponseWriter, ctx.Request)
+		}
+		middlewareChain = r.globalMiddlewareChain()
+	}
+
+	responseWriter := NewResponseWriterWrapper(w)
+
+	ctx := &Ctx[V]{
+		ResponseWriter: responseWriter,
+		Request:        req,
+		Params:         params,
+		StartTime:      time.Now().UnixNano(),
+		UUID:           uuid.NewString(),
+		Query:          req.URL.Query(),
+	}
+
+	handler = applyMiddleware(handler, middlewareChain)
+	handler(ctx)
+}
+
 func (r *Router[V]) search(method, path string) (HandlerFunc[V], []MiddlewareFunc[V], map[string]string, bool) {
 	parts := splitPath(path)
-	current := r.root
-
-	var paramsValues []string
+	cur := r.root
+	var paramValues []string
 
 	for i, part := range parts {
 		if part == "" {
 			continue
 		}
-
-		// First, try to match exact static segments
-		if child, ok := current.staticChildren[part]; ok {
-			current = child
+		if child, ok := cur.staticChildren[part]; ok {
+			cur = child
 			continue
 		}
 
-		// Next, try to match embedded parameters
+		// embedded param or standard param
 		matched := false
-		if current.staticChildren != nil {
-			for key, child := range current.staticChildren {
+		if cur.staticChildren != nil {
+			for key, child := range cur.staticChildren {
 				if strings.HasPrefix(part, key) {
 					remaining := part[len(key):]
 					if remaining != "" {
-						current = child
+						cur = child
 						part = remaining
 						for {
-							if current.paramChild != nil {
-								paramsValues = append(paramsValues, part)
-								current = current.paramChild
+							if cur.paramChild != nil {
+								paramValues = append(paramValues, part)
+								cur = cur.paramChild
 								matched = true
 								break
 							}
-							if current.staticChildren != nil {
+							if cur.staticChildren != nil {
 								found := false
-								for k, c := range current.staticChildren {
+								for k, c := range cur.staticChildren {
 									if strings.HasPrefix(part, k) {
-										current = c
+										cur = c
 										part = part[len(k):]
 										found = true
 										break
@@ -454,46 +475,36 @@ func (r *Router[V]) search(method, path string) (HandlerFunc[V], []MiddlewareFun
 			continue
 		}
 
-		// Next, try to match standard parameters
-		if current.paramChild != nil {
-			paramsValues = append(paramsValues, part)
-			current = current.paramChild
+		if cur.paramChild != nil {
+			paramValues = append(paramValues, part)
+			cur = cur.paramChild
 			continue
 		}
-
-		// Finally, try to match wildcard parameters
-		if current.wildcardChild != nil {
-			// Remaining parts are matched to wildcard parameter
+		if cur.wildcardChild != nil {
 			remainingParts := strings.Join(parts[i:], "/")
-			paramsValues = append(paramsValues, remainingParts)
-			current = current.wildcardChild
+			paramValues = append(paramValues, remainingParts)
+			cur = cur.wildcardChild
 			break
 		}
-
-		// No matching child
 		return nil, nil, nil, false
 	}
 
-	handlerEntry, ok := current.handlers[method]
-	if !ok || !current.isLeaf {
+	handlerEntry, ok := cur.handlers[method]
+	if !ok || !cur.isLeaf {
 		return nil, nil, nil, false
 	}
-
-	// Build the params map
 	var params map[string]string
 	if len(handlerEntry.paramNames) > 0 {
 		params = make(map[string]string, len(handlerEntry.paramNames))
 		for i, paramName := range handlerEntry.paramNames {
-			if i < len(paramsValues) {
-				params[paramName] = paramsValues[i]
+			if i < len(paramValues) {
+				params[paramName] = paramValues[i]
 			}
 		}
 	}
-
 	return handlerEntry.handler, handlerEntry.middleware, params, true
 }
 
-// wrapMiddleware ensures that middleware checks ctx.done before proceeding
 func wrapMiddleware[V any](mw MiddlewareFunc[V]) MiddlewareFunc[V] {
 	return func(next HandlerFunc[V]) HandlerFunc[V] {
 		return func(ctx *Ctx[V]) {
@@ -505,7 +516,6 @@ func wrapMiddleware[V any](mw MiddlewareFunc[V]) MiddlewareFunc[V] {
 	}
 }
 
-// wrapHandler ensures that the handler checks ctx.done before proceeding
 func wrapHandler[V any](handler HandlerFunc[V]) HandlerFunc[V] {
 	return func(ctx *Ctx[V]) {
 		if ctx.done {
@@ -515,7 +525,6 @@ func wrapHandler[V any](handler HandlerFunc[V]) HandlerFunc[V] {
 	}
 }
 
-// applyMiddleware wraps the handler with middleware functions
 func applyMiddleware[V any](handler HandlerFunc[V], middleware []MiddlewareFunc[V]) HandlerFunc[V] {
 	handler = wrapHandler(handler)
 	for i := len(middleware) - 1; i >= 0; i-- {
@@ -525,84 +534,62 @@ func applyMiddleware[V any](handler HandlerFunc[V], middleware []MiddlewareFunc[
 	return handler
 }
 
-// ServeHTTP implements the http.Handler interface
-func (r *Router[V]) ServeHTTP(w http.ResponseWriter, req *http.Request) {
-
-	path := req.URL.Path
-	method := req.Method
-
-	handler, middlewareChain, params, ok := r.search(method, path)
-
-	if !ok {
-		// Route not found, define a default handler
-		handler = func(ctx *Ctx[V]) {
-			if req.Method == "OPTIONS" {
-				w.Header().Set("Allow", "GET, POST, PUT, DELETE, PATCH, OPTIONS, HEAD")
-				w.WriteHeader(http.StatusOK)
-				return
-			}
-			http.NotFound(ctx.ResponseWriter, ctx.Request)
-		}
-		// Build middleware chain for 404 handler
-		middlewareChain = r.globalMiddlewareChain()
-	}
-
-	// Wrap the ResponseWriter with ResponseWriterWrapper
-	responseWriter := NewResponseWriterWrapper(w)
-
-	ctx := &Ctx[V]{
-		ResponseWriter: responseWriter,
-		Request:        req,
-		Params:         params,
-		StartTime:      time.Now().UnixNano(),
-		UUID:           uuid.NewString(),
-		Query:          req.URL.Query(),
-	}
-
-	handler = applyMiddleware(handler, middlewareChain)
-
-	handler(ctx)
-}
-
 func RecoveryMiddleware[V any]() MiddlewareFunc[V] {
 	return func(next HandlerFunc[V]) HandlerFunc[V] {
 		return func(ctx *Ctx[V]) {
 			defer func() {
 				if err := recover(); err != nil {
-					// Capture the stack trace
 					var pcs [32]uintptr
-					n := runtime.Callers(3, pcs[:]) // Skip first 3 callers
+					n := runtime.Callers(3, pcs[:])
 					frames := runtime.CallersFrames(pcs[:n])
 
 					var stackLines []string
-
 					for {
 						frame, more := frames.Next()
 						stackLines = append(stackLines, fmt.Sprintf("%s\n\t%s:%d", frame.Function, frame.File, frame.Line))
-
 						if !more {
 							break
 						}
 					}
-
 					zStack := zerolog.Arr()
 					for _, line := range stackLines {
 						zStack.Str(line)
 					}
-					if logger != nil {
-						var wrappedErr error
-						switch e := err.(type) {
-						case error:
-							wrappedErr = errors.WithStack(e)
-						default:
-							wrappedErr = errors.Errorf("%v", e)
+					var wrappedErr error
+					switch e := err.(type) {
+					case error:
+						wrappedErr = errors.WithStack(e)
+					default:
+						wrappedErr = errors.Errorf("%v", e)
+					}
+					if errors.Is(wrappedErr, http.ErrAbortHandler) {
+						if EnableLoggerCheck {
+							if logger != nil {
+								logger.Warn().
+									Str("path", ctx.Request.URL.Path).
+									Str("method", ctx.Request.Method).
+									Msg("[octo-panic] Client aborted request (panic recovered)")
+							}
+						} else {
+							logger.Warn().
+								Str("path", ctx.Request.URL.Path).
+								Str("method", ctx.Request.Method).
+								Msg("[octo-panic] Client aborted request (panic recovered)")
 						}
-
-						if errors.Is(wrappedErr, http.ErrAbortHandler) {
-							logger.Warn().Str("path", ctx.Request.URL.Path).
-								Str("method", ctx.Request.Method).Msg("[octo-panic] Client aborted request (panic recovered)")
-							return
+						return
+					}
+					if EnableLoggerCheck {
+						if logger != nil {
+							logger.Error().
+								Err(wrappedErr).
+								Stack().
+								Array("stack_array", zStack).
+								Str("path", ctx.Request.URL.Path).
+								Str("method", ctx.Request.Method).
+								Str("ip", ctx.ClientIP()).
+								Msg("[octo-panic] Panic recovered")
 						}
+					} else {
 						logger.Error().
 							Err(wrappedErr).
 							Stack().
@@ -612,14 +599,11 @@ func RecoveryMiddleware[V any]() MiddlewareFunc[V] {
 							Str("ip", ctx.ClientIP()).
 							Msg("[octo-panic] Panic recovered")
 					}
-					// Optionally, send an HTTP 500 response
 					if !strings.Contains(ctx.ResponseWriter.Header().Get("Content-Type"), "application/json") {
 						http.Error(ctx.ResponseWriter, "Internal Server Error", http.StatusInternalServerError)
 					}
 				}
 			}()
-
-			// Proceed to the next handler
 			next(ctx)
 		}
 	}
