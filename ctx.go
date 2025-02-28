@@ -453,10 +453,11 @@ func (c *Ctx[V]) SendData(statusCode int, contentType string, data []byte) {
 	if err != nil {
 		if EnableLoggerCheck {
 			if logger != nil {
-				logger.Error().Err(err).Msg("[octo] failed to write data")
+				// add ip address
+				logger.Error().Err(err).Msgf("[octo] failed to write data: %s", c.ClientIP())
 			}
 		} else {
-			logger.Error().Err(err).Msg("[octo] failed to write data")
+			logger.Error().Err(err).Msgf("[octo] failed to write data: %s", c.ClientIP())
 		}
 	}
 	c.Done()
