@@ -451,13 +451,15 @@ func (c *Ctx[V]) SendData(statusCode int, contentType string, data []byte) {
 	c.SetStatus(statusCode)
 	_, err := c.ResponseWriter.Write(data)
 	if err != nil {
+		// path for logging error if any
+		thePath := c.Request.URL.Path
 		if EnableLoggerCheck {
 			if logger != nil {
 				// add ip address
-				logger.Error().Err(err).Msgf("[octo] failed to write data: %s", c.ClientIP())
+				logger.Error().Err(err).Msgf("[octo] failed to write data: %s / '%s'", c.ClientIP(), thePath)
 			}
 		} else {
-			logger.Error().Err(err).Msgf("[octo] failed to write data: %s", c.ClientIP())
+			logger.Error().Err(err).Msgf("[octo] failed to write data: %s / '%s'", c.ClientIP(), thePath)
 		}
 	}
 	c.Done()
