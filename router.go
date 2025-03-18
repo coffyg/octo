@@ -3,6 +3,7 @@ package octo
 import (
 	"fmt"
 	"net/http"
+	"os"
 	"runtime/debug"
 	"strings"
 	"time"
@@ -354,16 +355,29 @@ func splitPath(path string) []string {
 	if path == "" || path == "/" {
 		return nil
 	}
+	
+	// Remove leading slash
 	if path[0] == '/' {
 		path = path[1:]
 	}
+	
+	// For short paths, avoid unnecessary allocations
+	if len(path) < 3 && !strings.Contains(path, "/") {
+		return []string{path}
+	}
+	
+	// Pre-count segments for better slice allocation
 	segmentCount := 1
 	for i := 0; i < len(path); i++ {
 		if path[i] == '/' {
 			segmentCount++
 		}
 	}
+	
+	// Pre-allocate slice with exact capacity
 	parts := make([]string, 0, segmentCount)
+	
+	// Split the path
 	start := 0
 	for i := 0; i <= len(path); i++ {
 		if i == len(path) || path[i] == '/' {
@@ -378,79 +392,98 @@ func splitPath(path string) []string {
 
 // ServeHTTP implements the http.Handler interface
 func (r *Router[V]) ServeHTTP(w http.ResponseWriter, req *http.Request) {
+	// Get core request info
 	path := req.URL.Path
 	method := req.Method
 
-	// Optionally add security headers
+	// Optionally add security headers - only add if enabled
 	if EnableSecurityHeaders {
-		w.Header().Set("X-Content-Type-Options", "nosniff")
-		w.Header().Set("X-Frame-Options", "DENY")
-		w.Header().Set("X-XSS-Protection", "1; mode=block")
+		header := w.Header()
+		header.Set("X-Content-Type-Options", "nosniff")
+		header.Set("X-Frame-Options", "DENY")
+		header.Set("X-XSS-Protection", "1; mode=block")
 	}
 
+	// Find matching route
 	handler, middlewareChain, params, ok := r.search(method, path)
+	
+	// Handle not found case
 	if !ok {
 		handler = func(ctx *Ctx[V]) {
+			// Fast path for OPTIONS requests
 			if req.Method == "OPTIONS" {
 				w.Header().Set("Allow", "GET, POST, PUT, DELETE, PATCH, OPTIONS, HEAD")
 				w.WriteHeader(http.StatusOK)
 				return
 			}
-			// Use Send404 which now includes path information in logs
+			// Use Send404 which includes path information in logs
 			ctx.Send404()
 		}
 		middlewareChain = r.globalMiddlewareChain()
 	}
 
+	// Wrap the response writer
 	responseWriter := NewResponseWriterWrapper(w)
 
+	// Create the context
+	// Pre-compute start time and UUID only once
+	startTime := time.Now().UnixNano()
+	requestID := uuid.NewString()
+	
 	ctx := &Ctx[V]{
 		ResponseWriter: responseWriter,
 		Request:        req,
 		Params:         params,
-		StartTime:      time.Now().UnixNano(),
-		UUID:           uuid.NewString(),
-		Query:          req.URL.Query(),
+		StartTime:      startTime,
+		UUID:           requestID,
+		Query:          req.URL.Query(), // Parse now to maintain compatibility with tests
 	}
 
+	// Apply middleware chain and execute
 	handler = applyMiddleware(handler, middlewareChain)
 	handler(ctx)
 }
 
 func (r *Router[V]) search(method, path string) (HandlerFunc[V], []MiddlewareFunc[V], map[string]string, bool) {
-	// Special case for root path or empty path
+	// Fast path for root or empty path
 	if path == "" || path == "/" {
-		handlerEntry, ok := r.root.handlers[method]
-		if ok && r.root.isLeaf {
-			return handlerEntry.handler, handlerEntry.middleware, make(map[string]string), true
+		if r.root.isLeaf {
+			if handlerEntry, ok := r.root.handlers[method]; ok {
+				return handlerEntry.handler, handlerEntry.middleware, make(map[string]string), true
+			}
 		}
 	}
 
+	// Split path into segments
 	parts := splitPath(path)
 	if len(parts) == 0 {
-		// If parts is empty (for paths like "///"), check root handler
-		handlerEntry, ok := r.root.handlers[method]
-		if ok && r.root.isLeaf {
-			return handlerEntry.handler, handlerEntry.middleware, make(map[string]string), true
+		// Handle paths like "///" by checking root handler
+		if r.root.isLeaf {
+			if handlerEntry, ok := r.root.handlers[method]; ok {
+				return handlerEntry.handler, handlerEntry.middleware, make(map[string]string), true
+			}
 		}
 		return nil, nil, nil, false
 	}
 
 	cur := r.root
-	var paramValues []string
+	// Pre-allocate parameter values slice to avoid multiple allocations
+	paramValues := make([]string, 0, 8) // Most paths have fewer than 8 parameters
 
 	for i, part := range parts {
 		if part == "" {
 			continue
 		}
 
-		// Try to match static child first
-		if child, ok := cur.staticChildren[part]; ok {
-			cur = child
-			continue
+		// Try static child first (most common case)
+		if cur.staticChildren != nil {
+			if child, ok := cur.staticChildren[part]; ok {
+				cur = child
+				continue
+			}
 		}
 
-		// Try embedded param or standard param next
+		// Try embedded parameter matching
 		matched := false
 		if cur.staticChildren != nil {
 			for key, child := range cur.staticChildren {
@@ -459,6 +492,8 @@ func (r *Router[V]) search(method, path string) (HandlerFunc[V], []MiddlewareFun
 					if remaining != "" {
 						cur = child
 						part = remaining
+						
+						// Handle nested parameter patterns
 						for {
 							if cur.paramChild != nil {
 								paramValues = append(paramValues, part)
@@ -466,23 +501,27 @@ func (r *Router[V]) search(method, path string) (HandlerFunc[V], []MiddlewareFun
 								matched = true
 								break
 							}
-							if cur.staticChildren != nil {
-								found := false
-								for k, c := range cur.staticChildren {
-									if strings.HasPrefix(part, k) {
-										cur = c
-										part = part[len(k):]
-										found = true
-										break
-									}
-								}
-								if !found {
+							
+							if cur.staticChildren == nil {
+								break
+							}
+							
+							// Check for static prefix matches
+							found := false
+							for k, c := range cur.staticChildren {
+								if strings.HasPrefix(part, k) {
+									cur = c
+									part = part[len(k):]
+									found = true
 									break
 								}
-							} else {
+							}
+							
+							if !found {
 								break
 							}
 						}
+						
 						if matched {
 							break
 						}
@@ -490,6 +529,7 @@ func (r *Router[V]) search(method, path string) (HandlerFunc[V], []MiddlewareFun
 				}
 			}
 		}
+		
 		if matched {
 			continue
 		}
@@ -501,62 +541,75 @@ func (r *Router[V]) search(method, path string) (HandlerFunc[V], []MiddlewareFun
 			continue
 		}
 
-		// Try wildcard child
+		// Try wildcard child (lowest priority)
 		if cur.wildcardChild != nil {
+			// Join remaining parts for wildcard param
 			remainingParts := strings.Join(parts[i:], "/")
 			paramValues = append(paramValues, remainingParts)
 			cur = cur.wildcardChild
 			break
 		}
 
-		// No match found
+		// No match found for this segment
 		return nil, nil, nil, false
 	}
 
+	// Check if we reached a leaf node with a handler for this method
+	if !cur.isLeaf {
+		return nil, nil, nil, false
+	}
+	
 	handlerEntry, ok := cur.handlers[method]
-	if !ok || !cur.isLeaf {
+	if !ok {
 		return nil, nil, nil, false
 	}
 
+	// Create parameter map only when needed
 	var params map[string]string
 	if len(handlerEntry.paramNames) > 0 {
-		params = make(map[string]string, len(handlerEntry.paramNames))
-		for i, paramName := range handlerEntry.paramNames {
-			if i < len(paramValues) {
-				params[paramName] = paramValues[i]
+		// Only allocate if we have parameter names
+		paramCount := len(handlerEntry.paramNames)
+		if paramCount > 0 {
+			params = make(map[string]string, paramCount)
+			for i, paramName := range handlerEntry.paramNames {
+				if i < len(paramValues) {
+					params[paramName] = paramValues[i]
+				}
 			}
 		}
 	}
+	
 	return handlerEntry.handler, handlerEntry.middleware, params, true
 }
 
-func wrapMiddleware[V any](mw MiddlewareFunc[V]) MiddlewareFunc[V] {
-	return func(next HandlerFunc[V]) HandlerFunc[V] {
+// Optimized middleware application that avoids unnecessary function wrapping
+func applyMiddleware[V any](handler HandlerFunc[V], middleware []MiddlewareFunc[V]) HandlerFunc[V] {
+	// Fast path for no middleware
+	if len(middleware) == 0 {
 		return func(ctx *Ctx[V]) {
 			if ctx.done {
 				return
 			}
-			mw(next)(ctx)
+			handler(ctx)
 		}
 	}
-}
-
-func wrapHandler[V any](handler HandlerFunc[V]) HandlerFunc[V] {
-	return func(ctx *Ctx[V]) {
-		if ctx.done {
-			return
-		}
-		handler(ctx)
-	}
-}
-
-func applyMiddleware[V any](handler HandlerFunc[V], middleware []MiddlewareFunc[V]) HandlerFunc[V] {
-	handler = wrapHandler(handler)
+	
+	// Apply middleware in reverse order (last middleware executes first)
+	result := handler
 	for i := len(middleware) - 1; i >= 0; i-- {
-		mw := wrapMiddleware(middleware[i])
-		handler = mw(handler)
+		mw := middleware[i]
+		prev := result
+		
+		// Create a new function that checks ctx.done before proceeding
+		result = func(ctx *Ctx[V]) {
+			if ctx.done {
+				return
+			}
+			mw(prev)(ctx)
+		}
 	}
-	return handler
+	
+	return result
 }
 
 func RecoveryMiddleware[V any]() MiddlewareFunc[V] {
@@ -564,6 +617,19 @@ func RecoveryMiddleware[V any]() MiddlewareFunc[V] {
 		return func(ctx *Ctx[V]) {
 			defer func() {
 				if r := recover(); r != nil {
+					// Verify context is valid for panic handling
+					if ctx == nil {
+						// Critical case - can't do much except log to stderr
+						fmt.Fprintf(os.Stderr, "CRITICAL: Panic with nil context: %v\n", r)
+						return
+					}
+
+					if ctx.Request == nil {
+						// Log panic but with limited context available
+						LogPanic(logger, r, debug.Stack())
+						return
+					}
+
 					// Get error object from the recovered panic
 					var wrappedErr error
 					switch e := r.(type) {
@@ -575,9 +641,8 @@ func RecoveryMiddleware[V any]() MiddlewareFunc[V] {
 					
 					// Handle client aborted requests differently (less severe)
 					if errors.Is(wrappedErr, http.ErrAbortHandler) {
-						if EnableLoggerCheck && logger == nil {
-							// Skip logging if logger is disabled
-						} else {
+						// Skip logging if logger is disabled
+						if !EnableLoggerCheck || logger != nil {
 							logger.Warn().
 								Str("path", ctx.Request.URL.Path).
 								Str("method", ctx.Request.Method).
@@ -588,9 +653,8 @@ func RecoveryMiddleware[V any]() MiddlewareFunc[V] {
 					}
 					
 					// For other panics, use our enhanced panic logging
-					if EnableLoggerCheck && logger == nil {
-						// Skip logging if logger is disabled
-					} else {
+					// Only log if logger is enabled and available
+					if !EnableLoggerCheck || logger != nil {
 						// Use the improved human-readable panic logging
 						LogPanicWithRequestInfo(
 							logger,
@@ -601,8 +665,11 @@ func RecoveryMiddleware[V any]() MiddlewareFunc[V] {
 							ctx.ClientIP())
 					}
 					
-					// Return an Internal Server Error response for non-JSON requests
-					if !strings.Contains(ctx.ResponseWriter.Header().Get("Content-Type"), "application/json") {
+					// Return an Internal Server Error response
+					// Check if we need to respond with JSON or plain text
+					contentType := ctx.ResponseWriter.Header().Get("Content-Type")
+					if ctx.ResponseWriter != nil && !strings.Contains(contentType, "application/json") {
+						// Send plain error message for non-JSON requests
 						http.Error(ctx.ResponseWriter, "Internal Server Error", http.StatusInternalServerError)
 					}
 				}

@@ -70,6 +70,12 @@ func (ctx *Ctx[V]) SendJSON(statusCode int, v interface{}) {
     if ctx.done {
         return
     }
+
+    // Validate input
+    if statusCode < 100 || statusCode > 599 {
+        ctx.SendError("err_invalid_status", New(ErrInvalidRequest, fmt.Sprintf("Invalid HTTP status code: %d", statusCode)))
+        return
+    }
     
     response, err := json.Marshal(v)
     if err != nil {
@@ -83,12 +89,15 @@ func (ctx *Ctx[V]) SendJSON(statusCode int, v interface{}) {
     
     _, err = ctx.ResponseWriter.Write(response)
     if err != nil {
-        if EnableLoggerCheck {
-            if logger != nil {
-                logger.Error().Err(err).Msg("[octo] failed to write response")
-            }
+        // Simplify nested conditionals
+        if EnableLoggerCheck && logger == nil {
+            // Skip logging if logger is disabled
         } else {
-            logger.Error().Err(err).Msg("[octo] failed to write response")
+            logger.Error().
+                Err(err).
+                Str("path", ctx.Request.URL.Path).
+                Str("ip", ctx.ClientIP()).
+                Msg("[octo] failed to write response")
         }
     }
     
@@ -104,13 +113,18 @@ func (ctx *Ctx[V]) Param(key string) string {
 
 // Checks both path and URL query parameters
 func (ctx *Ctx[V]) QueryParam(key string) string {
-    // First check path params
+    // First check path params (faster)
     if value, ok := ctx.Params[key]; ok {
         return value
     }
     
+    // Initialize query params if needed (lazy loading)
+    if ctx.Query == nil {
+        ctx.Query = ctx.Request.URL.Query()
+    }
+    
     // Then check query params
-    values := ctx.Request.URL.Query()[key]
+    values := ctx.Query[key]
     if len(values) > 0 {
         return values[0]
     }
@@ -119,13 +133,18 @@ func (ctx *Ctx[V]) QueryParam(key string) string {
 }
 
 func (ctx *Ctx[V]) DefaultQueryParam(key, defaultValue string) string {
-    // First check path params
+    // First check path params (faster)
     if value, ok := ctx.Params[key]; ok {
         return value
     }
     
+    // Initialize query params if needed (lazy loading)
+    if ctx.Query == nil {
+        ctx.Query = ctx.Request.URL.Query()
+    }
+    
     // Then check query params
-    values := ctx.Request.URL.Query()[key]
+    values := ctx.Query[key]
     if len(values) > 0 {
         return values[0]
     }
@@ -135,7 +154,12 @@ func (ctx *Ctx[V]) DefaultQueryParam(key, defaultValue string) string {
 
 // Only checks URL query parameters, not path parameters
 func (ctx *Ctx[V]) QueryValue(key string) string {
-    values := ctx.Request.URL.Query()[key]
+    // Initialize query params if needed (lazy loading)
+    if ctx.Query == nil {
+        ctx.Query = ctx.Request.URL.Query()
+    }
+    
+    values := ctx.Query[key]
     if len(values) > 0 {
         return values[0]
     }
@@ -143,7 +167,12 @@ func (ctx *Ctx[V]) QueryValue(key string) string {
 }
 
 func (ctx *Ctx[V]) DefaultQuery(key, defaultValue string) string {
-    values := ctx.Request.URL.Query()[key]
+    // Initialize query params if needed (lazy loading)
+    if ctx.Query == nil {
+        ctx.Query = ctx.Request.URL.Query()
+    }
+    
+    values := ctx.Query[key]
     if len(values) > 0 {
         return values[0]
     }
@@ -151,11 +180,21 @@ func (ctx *Ctx[V]) DefaultQuery(key, defaultValue string) string {
 }
 
 func (ctx *Ctx[V]) QueryArray(key string) []string {
-    return ctx.Request.URL.Query()[key]
+    // Initialize query params if needed (lazy loading)
+    if ctx.Query == nil {
+        ctx.Query = ctx.Request.URL.Query()
+    }
+    
+    return ctx.Query[key]
 }
 
 func (ctx *Ctx[V]) QueryMap() map[string][]string {
-    return ctx.Request.URL.Query()
+    // Initialize query params if needed (lazy loading)
+    if ctx.Query == nil {
+        ctx.Query = ctx.Request.URL.Query()
+    }
+    
+    return ctx.Query
 }
 
 func (ctx *Ctx[V]) Context() context.Context {
@@ -175,60 +214,51 @@ func (ctx *Ctx[V]) IsDone() bool {
 
 // Returns client IP with proxy awareness (X-Forwarded-For, X-Real-IP fallbacks)
 func (ctx *Ctx[V]) ClientIP() string {
-    // Try to get IP from X-Forwarded-For header first
-    if ip := ctx.clientIPFromXForwardedFor(); ip != "" {
-        return ip
+    // Assert prerequisites - ensure Request exists
+    if ctx.Request == nil {
+        // Return a safe default for failure cases
+        return "0.0.0.0"
     }
     
-    // Try to get IP from X-Real-IP header next
-    if ip := ctx.clientIPFromXRealIP(); ip != "" {
-        return ip
-    }
-    
-    // Finally, use the direct RemoteAddr
-    return ctx.clientIPFromRemoteAddr()
-}
-
-// Extracts and validates first IP from X-Forwarded-For header
-func (ctx *Ctx[V]) clientIPFromXForwardedFor() string {
-    ip := ctx.GetHeader("X-Forwarded-For")
-    if ip == "" {
-        return ""
-    }
-    
-    ips := strings.Split(ip, ",")
-    for _, ipStr := range ips {
-        ipStr = strings.TrimSpace(ipStr)
-        parsedIP := net.ParseIP(ipStr)
-        if parsedIP != nil {
-            return ipStr
+    // Fast path - check X-Forwarded-For header first (most common in proxied environments)
+    if xForwardedFor := ctx.Request.Header.Get("X-Forwarded-For"); xForwardedFor != "" {
+        // Fast path for simple case - single IP without comma
+        if !strings.Contains(xForwardedFor, ",") {
+            ip := strings.TrimSpace(xForwardedFor)
+            if net.ParseIP(ip) != nil {
+                return ip
+            }
+        } else {
+            // Multiple IPs - take first valid one
+            ips := strings.Split(xForwardedFor, ",")
+            if len(ips) > 0 {
+                ip := strings.TrimSpace(ips[0])
+                if net.ParseIP(ip) != nil {
+                    return ip
+                }
+            }
         }
     }
     
-    return ""
-}
-
-// Extracts and validates IP from X-Real-IP header
-func (ctx *Ctx[V]) clientIPFromXRealIP() string {
-    ip := ctx.GetHeader("X-Real-IP")
-    if ip == "" {
-        return ""
+    // Check X-Real-IP next
+    if xRealIP := ctx.Request.Header.Get("X-Real-IP"); xRealIP != "" {
+        ip := strings.TrimSpace(xRealIP)
+        if net.ParseIP(ip) != nil {
+            return ip
+        }
     }
     
-    ip = strings.TrimSpace(ip)
-    parsedIP := net.ParseIP(ip)
-    if parsedIP != nil {
-        return ip
+    // Finally, use the direct RemoteAddr (fastest path for direct connections)
+    remoteAddr := ctx.Request.RemoteAddr
+    if remoteAddr == "" {
+        return "0.0.0.0"
     }
     
-    return ""
-}
-
-// Extracts IP portion from RemoteAddr
-func (ctx *Ctx[V]) clientIPFromRemoteAddr() string {
-    ip, _, err := net.SplitHostPort(strings.TrimSpace(ctx.Request.RemoteAddr))
+    // Most RemoteAddr values will have the port
+    ip, _, err := net.SplitHostPort(remoteAddr)
     if err != nil {
-        return ctx.Request.RemoteAddr
+        // Handle edge case where RemoteAddr has no port
+        return remoteAddr
     }
     return ip
 }
@@ -368,14 +398,25 @@ func (ctx *Ctx[V]) ShouldBind(obj interface{}) error {
 
 // Ensures request body is loaded once and cached for reuse
 func (ctx *Ctx[V]) NeedBody() error {
+    // If we've already read the body, return immediately
     if ctx.hasReadBody {
         return nil
     }
     
+    // Assert prerequisites
+    if ctx.Request == nil {
+        return New(ErrInvalidRequest, "request is nil")
+    }
+    
+    if ctx.ResponseWriter == nil {
+        return New(ErrInvalidRequest, "response writer is nil")
+    }
+    
+    // Mark that we've read the body to prevent duplicate reads
     ctx.hasReadBody = true
     ctx.ResponseWriter.CaptureBody = true
 
-    // Read body with size limit
+    // Apply size limits and read the body
     err := ctx.readBodyWithSizeLimit()
     if err != nil {
         return err
@@ -420,18 +461,22 @@ func (ctx *Ctx[V]) logBodyReadError(err error) {
 }
 
 func (ctx *Ctx[V]) logBodySizeError(err error) {
-    // Create extended event with body size info
-    if EnableLoggerCheck && logger == nil {
-        return
+    // Skip if logger check is enabled and logger is nil
+    if EnableLoggerCheck {
+        if logger == nil {
+            return
+        }
     }
     
+    // Create base error event with body size info
     event := logger.Error().Err(err).Int64("maxSize", GetMaxBodySize())
     
-    // Add path and IP when available
+    // Add path and IP when available - avoid compound conditional
     if ctx.Request != nil {
-        event = event.
-            Str("path", ctx.Request.URL.Path).
-            Str("ip", ctx.ClientIP())
+        if ctx.Request.URL != nil {
+            event = event.Str("path", ctx.Request.URL.Path)
+        }
+        event = event.Str("ip", ctx.ClientIP())
     }
     
     event.Msg("[octo] request body exceeds maximum allowed size")

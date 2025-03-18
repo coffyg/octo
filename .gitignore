@@ -60,3 +60,7 @@ glide.lock
 *.session
 tags
 CLAUDE.md
+
+# Benchmark results
+bench/
+*.results
