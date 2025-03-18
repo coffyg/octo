@@ -1,43 +1,48 @@
 package octo
 
 import (
-	"github.com/rs/zerolog"
-	"github.com/rs/zerolog/pkgerrors"
+    "github.com/rs/zerolog"
+    "github.com/rs/zerolog/pkgerrors"
 )
 
 var logger *zerolog.Logger
 
-// Max body size for all requests
-var maxBodySize int64 = 10 * 1024 * 1024
+// BodySizeMaxBytes defines the maximum body size for all requests
+var bodySizeMaxBytes int64 = 10 * 1024 * 1024
 
-// 1) Defer buffer allocation in rwriter.go
+// DeferBufferAllocation controls buffer allocation in rwriter.go
 var DeferBufferAllocation = true
 
-// 2) Check logger != nil in ctx.go (guard logging statements)
+// EnableLoggerCheck guards logger != nil checks in ctx.go
 var EnableLoggerCheck = true
 
-// 3) Add simple security headers in router.go
+// EnableSecurityHeaders adds simple security headers in router.go
 var EnableSecurityHeaders = false
 
+// SetupOctoLogger configures the zerolog logger for Octo
 func SetupOctoLogger(l *zerolog.Logger) {
-	zerolog.ErrorStackMarshaler = pkgerrors.MarshalStack
-	logger = l
+    zerolog.ErrorStackMarshaler = pkgerrors.MarshalStack
+    logger = l
 }
 
-func SetupOCto(l *zerolog.Logger, mbs int64) {
-	zerolog.ErrorStackMarshaler = pkgerrors.MarshalStack
-	logger = l
-	maxBodySize = mbs
+// SetupOcto configures the zerolog logger and maximum body size
+func SetupOcto(l *zerolog.Logger, maxBytes int64) {
+    zerolog.ErrorStackMarshaler = pkgerrors.MarshalStack
+    logger = l
+    bodySizeMaxBytes = maxBytes
 }
 
+// GetLogger returns the configured logger instance
 func GetLogger() *zerolog.Logger {
-	return logger
+    return logger
 }
 
-func ChangeMaxBodySize(mbs int64) {
-	maxBodySize = mbs
+// ChangeMaxBodySize updates the maximum allowed request body size
+func ChangeMaxBodySize(maxBytes int64) {
+    bodySizeMaxBytes = maxBytes
 }
 
+// GetMaxBodySize returns the current maximum body size setting
 func GetMaxBodySize() int64 {
-	return maxBodySize
+    return bodySizeMaxBytes
 }
