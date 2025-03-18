@@ -209,15 +209,40 @@ func MustAssert(condition bool, message string) {
 
 // Logs errors with appropriate context and stack trace
 func LogError(logger *zerolog.Logger, err error) {
+    logErrorInternal(logger, err, "", "")
+}
+
+// LogErrorWithPath logs errors with request path context
+func LogErrorWithPath(logger *zerolog.Logger, err error, path string) {
+    logErrorInternal(logger, err, path, "")
+}
+
+// LogErrorWithPathIP logs errors with request path and IP address context
+func LogErrorWithPathIP(logger *zerolog.Logger, err error, path string, ip string) {
+    logErrorInternal(logger, err, path, ip)
+}
+
+// Internal function for error logging, supporting optional path and IP context
+func logErrorInternal(logger *zerolog.Logger, err error, path string, ip string) {
     if err == nil || logger == nil {
         return
     }
     
     event := logger.Error().Err(err)
     
+    // Add request path if available
+    if path != "" {
+        event = event.Str("path", path)
+    }
+    
+    // Add client IP if available
+    if ip != "" {
+        event = event.Str("ip", ip)
+    }
+    
     // Add caller information based on error type
     if _, ok := err.(*OctoError); !ok {
-        if pc, file, line, ok := runtime.Caller(1); ok {
+        if pc, file, line, ok := runtime.Caller(2); ok {
             shortFile := file
             if idx := strings.LastIndex(file, "/"); idx >= 0 {
                 shortFile = file[idx+1:]
@@ -248,27 +273,115 @@ func LogError(logger *zerolog.Logger, err error) {
 
 // Handles and logs recovered panics with full context
 func LogPanic(logger *zerolog.Logger, recovered interface{}, stack []byte) {
+    LogPanicWithRequestInfo(logger, recovered, stack, "", "", "")
+}
+
+// Handles and logs recovered panics with full context including request information
+func LogPanicWithRequestInfo(logger *zerolog.Logger, recovered interface{}, stack []byte, path string, method string, ip string) {
     if logger == nil {
         return
     }
     
     var err error
+    var errMsg string
+    
+    // Extract a meaningful panic message
     switch v := recovered.(type) {
     case error:
         err = v
+        errMsg = v.Error()
     case string:
         err = errors.New(v)
+        errMsg = v
     default:
-        err = errors.Errorf("%v", recovered)
+        errMsg = fmt.Sprintf("%v", recovered)
+        err = errors.New(errMsg)
     }
     
     wrappedErr := Wrap(err, ErrInternal, "Panic recovered")
     
+    // Convert stack trace format to match the router's format
     stackStr := string(stack)
-    logger.Error().
+    stackLines := strings.Split(stackStr, "\n")
+    
+    // Extract the panic location (function, file, line) from the stack trace
+    var panicLocation string
+    if len(stackLines) >= 2 {
+        panicFunc := strings.TrimSpace(stackLines[1])
+        panicFile := strings.TrimSpace(stackLines[2])
+        panicLocation = fmt.Sprintf("%s at %s", panicFunc, panicFile)
+    }
+    
+    // Format the stack trace for better readability
+    zStack := make([]string, 0, len(stackLines)/2)
+    for i := 1; i < len(stackLines); i += 2 {
+        if i+1 < len(stackLines) {
+            funcLine := strings.TrimSpace(stackLines[i])
+            fileLine := strings.TrimSpace(stackLines[i+1])
+            if funcLine != "" && fileLine != "" {
+                // Clean up the function and file information for better readability
+                funcName := funcLine
+                // Extract just the function name without the package path if possible
+                if lastDot := strings.LastIndex(funcName, "."); lastDot > 0 {
+                    funcBaseName := funcName[lastDot+1:]
+                    if len(funcBaseName) > 0 {
+                        // Keep package name for context but highlight the function name
+                        funcName = funcName[:lastDot+1] + funcBaseName
+                    }
+                }
+                zStack = append(zStack, funcName+"\n\t"+fileLine)
+            }
+        }
+    }
+    
+    // Create the log event
+    event := logger.Error().
         Err(wrappedErr).
         Str("error_code", string(wrappedErr.Code)).
-        Int("status_code", wrappedErr.StatusCode).
-        Str("stack_trace", stackStr).
-        Msg("[octo-panic] Panic recovered")
+        Int("status_code", wrappedErr.StatusCode)
+    
+    // Add a summary section for quick understanding
+    requestInfo := ""
+    if method != "" && path != "" {
+        requestInfo = fmt.Sprintf(" during %s %s", method, path)
+    }
+    
+    clientInfo := ""
+    if ip != "" {
+        clientInfo = fmt.Sprintf(" from %s", ip)
+    }
+    
+    event = event.Str("panic_summary", fmt.Sprintf("%s%s%s", errMsg, requestInfo, clientInfo))
+    
+    if panicLocation != "" {
+        event = event.Str("panic_location", panicLocation)
+    }
+    
+    // Add stack array in the format expected by the router
+    stackArr := zerolog.Arr()
+    for _, s := range zStack {
+        stackArr = stackArr.Str(s)
+    }
+    event = event.Array("stack_array", stackArr)
+    
+    // Add request information if available
+    if path != "" {
+        event = event.Str("path", path)
+    }
+    if method != "" {
+        event = event.Str("method", method)
+    }
+    if ip != "" {
+        event = event.Str("ip", ip)
+    }
+    
+    // Create a more informative message
+    logMsg := "[octo-panic] Panic recovered"
+    if panicLocation != "" {
+        logMsg = fmt.Sprintf("[octo-panic] Panic recovered: %s at %s", errMsg, panicLocation)
+    } else {
+        logMsg = fmt.Sprintf("[octo-panic] Panic recovered: %s", errMsg)
+    }
+    
+    event.Msg(logMsg)
 }

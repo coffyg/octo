@@ -3,13 +3,12 @@ package octo
 import (
 	"fmt"
 	"net/http"
-	"runtime"
+	"runtime/debug"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/pkg/errors"
-	"github.com/rs/zerolog"
 )
 
 type HandlerFunc[V any] func(*Ctx[V])
@@ -397,7 +396,8 @@ func (r *Router[V]) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 				w.WriteHeader(http.StatusOK)
 				return
 			}
-			http.NotFound(ctx.ResponseWriter, ctx.Request)
+			// Use Send404 which now includes path information in logs
+			ctx.Send404()
 		}
 		middlewareChain = r.globalMiddlewareChain()
 	}
@@ -563,67 +563,45 @@ func RecoveryMiddleware[V any]() MiddlewareFunc[V] {
 	return func(next HandlerFunc[V]) HandlerFunc[V] {
 		return func(ctx *Ctx[V]) {
 			defer func() {
-				if err := recover(); err != nil {
-					var pcs [32]uintptr
-					n := runtime.Callers(3, pcs[:])
-					frames := runtime.CallersFrames(pcs[:n])
-
-					var stackLines []string
-					for {
-						frame, more := frames.Next()
-						stackLines = append(stackLines, fmt.Sprintf("%s\n\t%s:%d", frame.Function, frame.File, frame.Line))
-						if !more {
-							break
-						}
-					}
-					zStack := zerolog.Arr()
-					for _, line := range stackLines {
-						zStack.Str(line)
-					}
+				if r := recover(); r != nil {
+					// Get error object from the recovered panic
 					var wrappedErr error
-					switch e := err.(type) {
+					switch e := r.(type) {
 					case error:
 						wrappedErr = errors.WithStack(e)
 					default:
-						wrappedErr = errors.Errorf("%v", e)
+						wrappedErr = errors.Errorf("%v", r)
 					}
+					
+					// Handle client aborted requests differently (less severe)
 					if errors.Is(wrappedErr, http.ErrAbortHandler) {
-						if EnableLoggerCheck {
-							if logger != nil {
-								logger.Warn().
-									Str("path", ctx.Request.URL.Path).
-									Str("method", ctx.Request.Method).
-									Msg("[octo-panic] Client aborted request (panic recovered)")
-							}
+						if EnableLoggerCheck && logger == nil {
+							// Skip logging if logger is disabled
 						} else {
 							logger.Warn().
 								Str("path", ctx.Request.URL.Path).
 								Str("method", ctx.Request.Method).
+								Str("ip", ctx.ClientIP()).
 								Msg("[octo-panic] Client aborted request (panic recovered)")
 						}
 						return
 					}
-					if EnableLoggerCheck {
-						if logger != nil {
-							logger.Error().
-								Err(wrappedErr).
-								Stack().
-								Array("stack_array", zStack).
-								Str("path", ctx.Request.URL.Path).
-								Str("method", ctx.Request.Method).
-								Str("ip", ctx.ClientIP()).
-								Msg("[octo-panic] Panic recovered")
-						}
+					
+					// For other panics, use our enhanced panic logging
+					if EnableLoggerCheck && logger == nil {
+						// Skip logging if logger is disabled
 					} else {
-						logger.Error().
-							Err(wrappedErr).
-							Stack().
-							Array("stack_array", zStack).
-							Str("path", ctx.Request.URL.Path).
-							Str("method", ctx.Request.Method).
-							Str("ip", ctx.ClientIP()).
-							Msg("[octo-panic] Panic recovered")
+						// Use the improved human-readable panic logging
+						LogPanicWithRequestInfo(
+							logger,
+							r,
+							debug.Stack(),
+							ctx.Request.URL.Path,
+							ctx.Request.Method,
+							ctx.ClientIP())
 					}
+					
+					// Return an Internal Server Error response for non-JSON requests
 					if !strings.Contains(ctx.ResponseWriter.Header().Get("Content-Type"), "application/json") {
 						http.Error(ctx.ResponseWriter, "Internal Server Error", http.StatusInternalServerError)
 					}

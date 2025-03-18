@@ -5,6 +5,7 @@ import (
     "context"
     "encoding/json"
     "encoding/xml"
+    "fmt"
     "io"
     "mime"
     "net"
@@ -411,24 +412,29 @@ func (ctx *Ctx[V]) readBodyWithSizeLimit() error {
 
 func (ctx *Ctx[V]) logBodyReadError(err error) {
     octoErr := Wrap(err, ErrInvalidRequest, "failed to read request body")
-    LogError(logger, octoErr)
+    if ctx.Request != nil {
+        LogErrorWithPathIP(logger, octoErr, ctx.Request.URL.Path, ctx.ClientIP())
+    } else {
+        LogError(logger, octoErr)
+    }
 }
 
 func (ctx *Ctx[V]) logBodySizeError(err error) {
     // Create extended event with body size info
-    if EnableLoggerCheck {
-        if logger != nil {
-            logger.Error().
-                Err(err).
-                Int64("maxSize", GetMaxBodySize()).
-                Msg("[octo] request body exceeds maximum allowed size")
-        }
-    } else {
-        logger.Error().
-            Err(err).
-            Int64("maxSize", GetMaxBodySize()).
-            Msg("[octo] request body exceeds maximum allowed size")
+    if EnableLoggerCheck && logger == nil {
+        return
     }
+    
+    event := logger.Error().Err(err).Int64("maxSize", GetMaxBodySize())
+    
+    // Add path and IP when available
+    if ctx.Request != nil {
+        event = event.
+            Str("path", ctx.Request.URL.Path).
+            Str("ip", ctx.ClientIP())
+    }
+    
+    event.Msg("[octo] request body exceeds maximum allowed size")
 }
 
 // Sends standardized error response with proper HTTP status code
@@ -465,8 +471,12 @@ func (ctx *Ctx[V]) SendError(code string, err error) {
         message = message + ": " + octoErr.Original.Error()
     }
     
-    // Log the error
-    LogError(logger, octoErr)
+    // Log the error with request path and IP context
+    if ctx.Request != nil {
+        LogErrorWithPathIP(logger, octoErr, ctx.Request.URL.Path, ctx.ClientIP())
+    } else {
+        LogError(logger, octoErr)
+    }
     
     // Create and send response
     result := ctx.createErrorResult(string(errorCode), message)
@@ -510,8 +520,12 @@ func (ctx *Ctx[V]) SendErrorStatus(statusCode int, code string, err error) {
         message = message + ": " + octoErr.Original.Error()
     }
     
-    // Log the error
-    LogError(logger, octoErr)
+    // Log the error with request path and IP context
+    if ctx.Request != nil {
+        LogErrorWithPathIP(logger, octoErr, ctx.Request.URL.Path, ctx.ClientIP())
+    } else {
+        LogError(logger, octoErr)
+    }
     
     // Create and send response
     result := ctx.createErrorResult(string(errorCode), message)
@@ -527,8 +541,12 @@ func (ctx *Ctx[V]) buildErrorMessage(baseMessage string, err error) string {
     // Create an OctoError
     octoErr := Wrap(err, ErrUnknown, baseMessage)
     
-    // Log it properly
-    LogError(logger, octoErr)
+    // Log it properly with path and IP if available
+    if ctx.Request != nil {
+        LogErrorWithPathIP(logger, octoErr, ctx.Request.URL.Path, ctx.ClientIP())
+    } else {
+        LogError(logger, octoErr)
+    }
     
     // Return the formatted message
     if octoErr.Message != "" {
@@ -578,21 +596,37 @@ func (ctx *Ctx[V]) Send404() {
     if ctx.done {
         return
     }
-    ctx.SendError(string(ErrNotFound), nil)
+    // Create a custom error with request path in message
+    var err error
+    if ctx.Request != nil {
+        err = Newf(ErrNotFound, "Route not found: %s", ctx.Request.URL.Path)
+    }
+    ctx.SendError(string(ErrNotFound), err)
 }
 
 func (ctx *Ctx[V]) Send401() {
     if ctx.done {
         return
     }
-    ctx.SendError(string(ErrUnauthorized), nil)
+    // Create a custom error with request path in message
+    var err error
+    if ctx.Request != nil {
+        err = Newf(ErrUnauthorized, "Unauthorized request for: %s", ctx.Request.URL.Path)
+    }
+    ctx.SendError(string(ErrUnauthorized), err)
 }
 
 func (ctx *Ctx[V]) SendInvalidUUID() {
     if ctx.done {
         return
     }
-    ctx.SendError(string(ErrInvalidRequest), New(ErrInvalidRequest, "Invalid UUID"))
+    var message string
+    if ctx.Request != nil {
+        message = fmt.Sprintf("Invalid UUID in request: %s", ctx.Request.URL.Path)
+    } else {
+        message = "Invalid UUID"
+    }
+    ctx.SendError(string(ErrInvalidRequest), New(ErrInvalidRequest, message))
 }
 
 func (ctx *Ctx[V]) NewJSONResult(data interface{}, pagination *octypes.Pagination) {
