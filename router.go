@@ -414,6 +414,7 @@ func (r *Router[V]) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			if req.Method == "OPTIONS" {
 				w.Header().Set("Allow", "GET, POST, PUT, DELETE, PATCH, OPTIONS, HEAD")
 				w.WriteHeader(http.StatusOK)
+				// Nothing to write so no error to check
 				return
 			}
 			// Use Send404 which includes path information in logs

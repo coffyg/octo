@@ -1,6 +1,7 @@
 package octo
 
 import (
+    // Standard library imports
     "bytes"
     "context"
     "encoding/json"
@@ -15,9 +16,12 @@ import (
     "strings"
     "time"
 
-    "github.com/coffyg/octypes"
+    // Third-party imports
     "github.com/go-playground/form/v4"
     "github.com/pkg/errors"
+    
+    // Internal imports
+    "github.com/coffyg/octypes"
 )
 
 // Global form decoder instance
@@ -62,25 +66,25 @@ func (ctx *Ctx[V]) SetStatus(code int) {
     ctx.ResponseWriter.WriteHeader(code)
 }
 
-func (ctx *Ctx[V]) JSON(statusCode int, v interface{}) {
-    ctx.SendJSON(statusCode, v)
+func (ctx *Ctx[V]) JSON(statusCode int, v interface{}) error {
+    return ctx.SendJSON(statusCode, v)
 }
 
-func (ctx *Ctx[V]) SendJSON(statusCode int, v interface{}) {
+func (ctx *Ctx[V]) SendJSON(statusCode int, v interface{}) error {
     if ctx.done {
-        return
+        return nil
     }
 
     // Validate input
     if statusCode < 100 || statusCode > 599 {
         ctx.SendError("err_invalid_status", New(ErrInvalidRequest, fmt.Sprintf("Invalid HTTP status code: %d", statusCode)))
-        return
+        return fmt.Errorf("invalid HTTP status code: %d", statusCode)
     }
     
     response, err := json.Marshal(v)
     if err != nil {
         ctx.SendError("err_json_error", err)
-        return
+        return err
     }
     
     ctx.SetHeader("Content-Type", "application/json")
@@ -99,9 +103,12 @@ func (ctx *Ctx[V]) SendJSON(statusCode int, v interface{}) {
                 Str("ip", ctx.ClientIP()).
                 Msg("[octo] failed to write response")
         }
+        ctx.Done()
+        return err
     }
     
     ctx.Done()
+    return nil
 }
 
 func (ctx *Ctx[V]) Param(key string) string {
@@ -689,9 +696,9 @@ func (ctx *Ctx[V]) NewJSONResult(data interface{}, pagination *octypes.Paginatio
     ctx.SendJSON(http.StatusOK, result)
 }
 
-func (ctx *Ctx[V]) SendData(statusCode int, contentType string, data []byte) {
+func (ctx *Ctx[V]) SendData(statusCode int, contentType string, data []byte) error {
     if ctx.done {
-        return
+        return nil
     }
     
     // Set headers
@@ -703,9 +710,12 @@ func (ctx *Ctx[V]) SendData(statusCode int, contentType string, data []byte) {
     _, err := ctx.ResponseWriter.Write(data)
     if err != nil {
         ctx.logDataWriteError(err)
+        // Return error to caller for proper handling
+        return err
     }
     
     ctx.Done()
+    return nil
 }
 
 func (ctx *Ctx[V]) logDataWriteError(err error) {

@@ -1,0 +1,17 @@
+{
+    "verbose": true,
+    "fix": false,
+    "maxLineLength": 100,
+    "tabSize": 4,
+    "rules": {
+        "line-length": false,
+        "indentation": false,
+        "error-handling": false,
+        "naming-conventions": false,
+        "function-length": false,
+        "import-organization": true,
+        "explicit-types": false,
+        "nested-control-flow": false,
+        "gofmt": false
+    }
+}

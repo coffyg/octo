@@ -162,9 +162,19 @@ func TestShouldBind(t *testing.T) {
 	// Test with multipart form data
 	var b bytes.Buffer
 	wr := multipart.NewWriter(&b)
-	wr.WriteField("name", "Alice")
-	wr.WriteField("age", "28")
-	wr.Close()
+	var err error
+	err = wr.WriteField("name", "Alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = wr.WriteField("age", "28")
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = wr.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
 	req = httptest.NewRequest("POST", "/bind", &b)
 	req.Header.Set("Content-Type", wr.FormDataContentType())
 	w = httptest.NewRecorder()

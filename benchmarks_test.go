@@ -783,8 +783,14 @@ func BenchmarkRouter_StaticFileServing(b *testing.B) {
 		if err != nil {
 			b.Fatal(err)
 		}
-		io.ReadAll(resp.Body)
-		resp.Body.Close()
+		_, err = io.ReadAll(resp.Body)
+		if err != nil {
+			b.Fatal(err)
+		}
+		err = resp.Body.Close()
+		if err != nil {
+			b.Fatal(err)
+		}
 	}
 
 	elapsed := time.Since(startTime)
@@ -811,8 +817,14 @@ func BenchmarkRouter_FileServerIntegration(b *testing.B) {
 		b.Fatal(err)
 	}
 	defer os.Remove(tmpFile.Name())
-	tmpFile.Write(fileContent)
-	tmpFile.Close()
+	_, err = tmpFile.Write(fileContent)
+	if err != nil {
+		b.Fatal(err)
+	}
+	err = tmpFile.Close()
+	if err != nil {
+		b.Fatal(err)
+	}
 
 	// Use an actual HTTP server
 	server := httptest.NewServer(router)
@@ -829,8 +841,14 @@ func BenchmarkRouter_FileServerIntegration(b *testing.B) {
 		if err != nil {
 			b.Fatal(err)
 		}
-		io.ReadAll(resp.Body)
-		resp.Body.Close()
+		_, err = io.ReadAll(resp.Body)
+		if err != nil {
+			b.Fatal(err)
+		}
+		err = resp.Body.Close()
+		if err != nil {
+			b.Fatal(err)
+		}
 	}
 
 	elapsed := time.Since(startTime)
