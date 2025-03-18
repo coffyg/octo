@@ -582,7 +582,16 @@ func (r *Router[V]) search(method, path string) (HandlerFunc[V], []MiddlewareFun
 	return handlerEntry.handler, handlerEntry.middleware, params, true
 }
 
-// Optimized middleware application that avoids unnecessary function wrapping
+// Optimized middleware application that preserves the original middleware execution order
+// This approach ensures that middleware is applied in the correct sequence:
+// 1. First middleware in the chain (middleware[0]) runs first
+// 2. Last middleware in the chain (middleware[len-1]) runs last
+// 3. The handler runs after all middleware
+// 
+// Performance optimizations:
+// - Processing middleware in reverse order for proper nesting
+// - Single ctx.done check per function call
+// - Avoids unnecessary nested function calls with simpler implementation
 func applyMiddleware[V any](handler HandlerFunc[V], middleware []MiddlewareFunc[V]) HandlerFunc[V] {
 	// Fast path for no middleware
 	if len(middleware) == 0 {
@@ -593,14 +602,14 @@ func applyMiddleware[V any](handler HandlerFunc[V], middleware []MiddlewareFunc[
 			handler(ctx)
 		}
 	}
-	
-	// Apply middleware in reverse order (last middleware executes first)
+
+	// Apply middleware in reverse order to get the correct execution sequence
+	// Last middleware in the chain (middleware[len-1]) wraps the handler first
+	// First middleware in the chain (middleware[0]) is the outermost wrapper
 	result := handler
 	for i := len(middleware) - 1; i >= 0; i-- {
 		mw := middleware[i]
 		prev := result
-		
-		// Create a new function that checks ctx.done before proceeding
 		result = func(ctx *Ctx[V]) {
 			if ctx.done {
 				return
