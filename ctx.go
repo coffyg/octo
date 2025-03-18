@@ -19,10 +19,10 @@ import (
     "github.com/pkg/errors"
 )
 
-// formDecoder is a global instance of the form decoder
+// Global form decoder instance
 var formDecoder = form.NewDecoder()
 
-// Ctx represents the HTTP request context with generic custom data
+// HTTP request context with typed custom data field
 type Ctx[V any] struct {
     ResponseWriter *ResponseWriterWrapper `json:"-"`
     Request        *http.Request          `json:"-"`
@@ -37,42 +37,34 @@ type Ctx[V any] struct {
     hasReadBody    bool
 }
 
-// SetHeader sets a response header with the given key and value
 func (ctx *Ctx[V]) SetHeader(key, value string) {
     ctx.ResponseWriter.Header().Set(key, value)
 }
 
-// GetHeader returns a request header value for the given key
 func (ctx *Ctx[V]) GetHeader(key string) string {
     return ctx.Request.Header.Get(key)
 }
 
-// DelHeader removes a response header with the given key
 func (ctx *Ctx[V]) DelHeader(key string) {
     ctx.ResponseWriter.Header().Del(key)
 }
 
-// GetParam returns a path parameter value for the given key
 func (ctx *Ctx[V]) GetParam(key string) string {
     return ctx.Params[key]
 }
 
-// SetParam sets a path parameter with the given key and value
 func (ctx *Ctx[V]) SetParam(key, value string) {
     ctx.Params[key] = value
 }
 
-// SetStatus sets the HTTP response status code
 func (ctx *Ctx[V]) SetStatus(code int) {
     ctx.ResponseWriter.WriteHeader(code)
 }
 
-// JSON sends a JSON response with the given status code and value
 func (ctx *Ctx[V]) JSON(statusCode int, v interface{}) {
     ctx.SendJSON(statusCode, v)
 }
 
-// SendJSON marshals the given value to JSON and sends it as response
 func (ctx *Ctx[V]) SendJSON(statusCode int, v interface{}) {
     if ctx.done {
         return
@@ -102,7 +94,6 @@ func (ctx *Ctx[V]) SendJSON(statusCode int, v interface{}) {
     ctx.Done()
 }
 
-// Param returns a path parameter value for the given key
 func (ctx *Ctx[V]) Param(key string) string {
     if value, ok := ctx.Params[key]; ok {
         return value
@@ -110,8 +101,7 @@ func (ctx *Ctx[V]) Param(key string) string {
     return ""
 }
 
-// QueryParam returns a query parameter value, checking both
-// path parameters and URL query parameters
+// Checks both path and URL query parameters
 func (ctx *Ctx[V]) QueryParam(key string) string {
     // First check path params
     if value, ok := ctx.Params[key]; ok {
@@ -127,7 +117,6 @@ func (ctx *Ctx[V]) QueryParam(key string) string {
     return ""
 }
 
-// DefaultQueryParam returns a query parameter value with a default fallback
 func (ctx *Ctx[V]) DefaultQueryParam(key, defaultValue string) string {
     // First check path params
     if value, ok := ctx.Params[key]; ok {
@@ -143,8 +132,7 @@ func (ctx *Ctx[V]) DefaultQueryParam(key, defaultValue string) string {
     return defaultValue
 }
 
-// QueryValue returns only a URL query parameter value
-// (does not check path parameters)
+// Only checks URL query parameters, not path parameters
 func (ctx *Ctx[V]) QueryValue(key string) string {
     values := ctx.Request.URL.Query()[key]
     if len(values) > 0 {
@@ -153,7 +141,6 @@ func (ctx *Ctx[V]) QueryValue(key string) string {
     return ""
 }
 
-// DefaultQuery returns a URL query parameter with a default fallback
 func (ctx *Ctx[V]) DefaultQuery(key, defaultValue string) string {
     values := ctx.Request.URL.Query()[key]
     if len(values) > 0 {
@@ -162,22 +149,18 @@ func (ctx *Ctx[V]) DefaultQuery(key, defaultValue string) string {
     return defaultValue
 }
 
-// QueryArray returns all values for a URL query parameter
 func (ctx *Ctx[V]) QueryArray(key string) []string {
     return ctx.Request.URL.Query()[key]
 }
 
-// QueryMap returns the entire URL query parameters map
 func (ctx *Ctx[V]) QueryMap() map[string][]string {
     return ctx.Request.URL.Query()
 }
 
-// Context returns the native Go context from the request
 func (ctx *Ctx[V]) Context() context.Context {
     return ctx.Request.Context()
 }
 
-// Done marks the context as completed to prevent further processing
 func (ctx *Ctx[V]) Done() {
     if ctx.done {
         return
@@ -185,12 +168,11 @@ func (ctx *Ctx[V]) Done() {
     ctx.done = true
 }
 
-// IsDone returns whether the context has been marked as done
 func (ctx *Ctx[V]) IsDone() bool {
     return ctx.done
 }
 
-// ClientIP returns the client's IP address, even if behind a proxy
+// Returns client IP with proxy awareness (X-Forwarded-For, X-Real-IP fallbacks)
 func (ctx *Ctx[V]) ClientIP() string {
     // Try to get IP from X-Forwarded-For header first
     if ip := ctx.clientIPFromXForwardedFor(); ip != "" {
@@ -206,7 +188,7 @@ func (ctx *Ctx[V]) ClientIP() string {
     return ctx.clientIPFromRemoteAddr()
 }
 
-// clientIPFromXForwardedFor attempts to extract a valid IP from the X-Forwarded-For header
+// Extracts and validates first IP from X-Forwarded-For header
 func (ctx *Ctx[V]) clientIPFromXForwardedFor() string {
     ip := ctx.GetHeader("X-Forwarded-For")
     if ip == "" {
@@ -225,7 +207,7 @@ func (ctx *Ctx[V]) clientIPFromXForwardedFor() string {
     return ""
 }
 
-// clientIPFromXRealIP attempts to extract a valid IP from the X-Real-IP header
+// Extracts and validates IP from X-Real-IP header
 func (ctx *Ctx[V]) clientIPFromXRealIP() string {
     ip := ctx.GetHeader("X-Real-IP")
     if ip == "" {
@@ -241,7 +223,7 @@ func (ctx *Ctx[V]) clientIPFromXRealIP() string {
     return ""
 }
 
-// clientIPFromRemoteAddr extracts the IP part from the RemoteAddr
+// Extracts IP portion from RemoteAddr
 func (ctx *Ctx[V]) clientIPFromRemoteAddr() string {
     ip, _, err := net.SplitHostPort(strings.TrimSpace(ctx.Request.RemoteAddr))
     if err != nil {
@@ -250,7 +232,6 @@ func (ctx *Ctx[V]) clientIPFromRemoteAddr() string {
     return ip
 }
 
-// Cookie retrieves the value of the named cookie from the request
 func (ctx *Ctx[V]) Cookie(name string) (string, error) {
     cookie, err := ctx.Request.Cookie(name)
     if err != nil {
@@ -259,7 +240,6 @@ func (ctx *Ctx[V]) Cookie(name string) (string, error) {
     return cookie.Value, nil
 }
 
-// SetCookie adds a Set-Cookie header to the response
 func (ctx *Ctx[V]) SetCookie(name, value string, maxAge int, path, domain string, secure, httpOnly bool) {
     if maxAge <= 0 {
         maxAge = -1
@@ -284,7 +264,7 @@ func (ctx *Ctx[V]) SetCookie(name, value string, maxAge int, path, domain string
     })
 }
 
-// ShouldBindJSON binds the request body into an interface using JSON
+// Parses request body as JSON into the provided object
 func (ctx *Ctx[V]) ShouldBindJSON(obj interface{}) error {
     err := ctx.NeedBody()
     if err != nil {
@@ -303,7 +283,7 @@ func (ctx *Ctx[V]) ShouldBindJSON(obj interface{}) error {
     return nil
 }
 
-// ShouldBindXML binds the request body into an interface using XML
+// Parses request body as XML into the provided object
 func (ctx *Ctx[V]) ShouldBindXML(obj interface{}) error {
     err := ctx.NeedBody()
     if err != nil {
@@ -322,7 +302,7 @@ func (ctx *Ctx[V]) ShouldBindXML(obj interface{}) error {
     return nil
 }
 
-// ShouldBindForm binds form data into the provided object
+// Parses form data into the provided object
 func (ctx *Ctx[V]) ShouldBindForm(obj interface{}) error {
     err := ctx.NeedBody()
     if err != nil {
@@ -341,7 +321,7 @@ func (ctx *Ctx[V]) ShouldBindForm(obj interface{}) error {
     return nil
 }
 
-// ShouldBindMultipartForm binds multipart form data into the provided object
+// Parses multipart form data into the provided object
 func (ctx *Ctx[V]) ShouldBindMultipartForm(obj interface{}) error {
     err := ctx.NeedBody()
     if err != nil {
@@ -361,13 +341,12 @@ func (ctx *Ctx[V]) ShouldBindMultipartForm(obj interface{}) error {
     return nil
 }
 
-// mapForm maps form values into the provided struct
+// Helper to decode form values into struct using go-playground/form
 func mapForm(ptr interface{}, formData url.Values) error {
     return formDecoder.Decode(ptr, formData)
 }
 
-// ShouldBind binds the request body into the provided object
-// according to the Content-Type header
+// Auto-selects appropriate binding method based on Content-Type
 func (ctx *Ctx[V]) ShouldBind(obj interface{}) error {
     contentType := ctx.GetHeader("Content-Type")
     contentType, _, _ = mime.ParseMediaType(contentType)
@@ -386,7 +365,7 @@ func (ctx *Ctx[V]) ShouldBind(obj interface{}) error {
     }
 }
 
-// NeedBody ensures the request body is loaded and available for processing
+// Ensures request body is loaded once and cached for reuse
 func (ctx *Ctx[V]) NeedBody() error {
     if ctx.hasReadBody {
         return nil
@@ -404,7 +383,7 @@ func (ctx *Ctx[V]) NeedBody() error {
     return nil
 }
 
-// readBodyWithSizeLimit reads the request body with size limit check
+// Reads request body with size limit enforcement
 func (ctx *Ctx[V]) readBodyWithSizeLimit() error {
     // Add 1 byte to detect if the body is too large
     limitedReader := io.LimitReader(ctx.Request.Body, GetMaxBodySize()+1)
@@ -430,13 +409,11 @@ func (ctx *Ctx[V]) readBodyWithSizeLimit() error {
     return nil
 }
 
-// logBodyReadError logs body read errors with logger check
 func (ctx *Ctx[V]) logBodyReadError(err error) {
     octoErr := Wrap(err, ErrInvalidRequest, "failed to read request body")
     LogError(logger, octoErr)
 }
 
-// logBodySizeError logs body size errors with logger check
 func (ctx *Ctx[V]) logBodySizeError(err error) {
     // Create extended event with body size info
     if EnableLoggerCheck {
@@ -454,7 +431,7 @@ func (ctx *Ctx[V]) logBodySizeError(err error) {
     }
 }
 
-// SendError sends an error response based on the provided error code and error
+// Sends standardized error response with proper HTTP status code
 func (ctx *Ctx[V]) SendError(code string, err error) {
     if ctx.done {
         return
@@ -496,7 +473,7 @@ func (ctx *Ctx[V]) SendError(code string, err error) {
     ctx.SendJSON(octoErr.StatusCode, result)
 }
 
-// SendErrorStatus sends an error response with a specific HTTP status code
+// Like SendError but allows overriding the HTTP status code
 func (ctx *Ctx[V]) SendErrorStatus(statusCode int, code string, err error) {
     if ctx.done {
         return
@@ -541,8 +518,7 @@ func (ctx *Ctx[V]) SendErrorStatus(statusCode int, code string, err error) {
     ctx.SendJSON(statusCode, result)
 }
 
-// (deprecated) buildErrorMessage is maintained for backward compatibility
-// New code should use OctoError directly
+// DEPRECATED: Maintained for backward compatibility. Use OctoError instead.
 func (ctx *Ctx[V]) buildErrorMessage(baseMessage string, err error) string {
     if err == nil {
         return baseMessage
@@ -565,8 +541,7 @@ func (ctx *Ctx[V]) buildErrorMessage(baseMessage string, err error) string {
     return baseMessage + ": " + err.Error()
 }
 
-// (deprecated) logError is maintained for backward compatibility
-// New code should use LogError directly
+// DEPRECATED: Maintained for backward compatibility. Use LogError instead.
 func (ctx *Ctx[V]) logError(err error, file string, line int, funcName string) {
     // Create temporary OctoError with the file and line info
     octoErr := &OctoError{
@@ -582,7 +557,6 @@ func (ctx *Ctx[V]) logError(err error, file string, line int, funcName string) {
     LogError(logger, octoErr)
 }
 
-// createErrorResult creates a BaseResult for error responses
 func (ctx *Ctx[V]) createErrorResult(code string, message string) BaseResult {
     return BaseResult{
         Result:  "error",
@@ -592,7 +566,6 @@ func (ctx *Ctx[V]) createErrorResult(code string, message string) BaseResult {
     }
 }
 
-// Redirect performs an HTTP redirect to the specified URL
 func (ctx *Ctx[V]) Redirect(status int, url string) {
     if ctx.done {
         return
@@ -601,7 +574,6 @@ func (ctx *Ctx[V]) Redirect(status int, url string) {
     ctx.Done()
 }
 
-// Send404 sends a 404 Not Found error response
 func (ctx *Ctx[V]) Send404() {
     if ctx.done {
         return
@@ -609,7 +581,6 @@ func (ctx *Ctx[V]) Send404() {
     ctx.SendError(string(ErrNotFound), nil)
 }
 
-// Send401 sends a 401 Unauthorized error response
 func (ctx *Ctx[V]) Send401() {
     if ctx.done {
         return
@@ -617,7 +588,6 @@ func (ctx *Ctx[V]) Send401() {
     ctx.SendError(string(ErrUnauthorized), nil)
 }
 
-// SendInvalidUUID sends an error response for invalid UUID
 func (ctx *Ctx[V]) SendInvalidUUID() {
     if ctx.done {
         return
@@ -625,7 +595,6 @@ func (ctx *Ctx[V]) SendInvalidUUID() {
     ctx.SendError(string(ErrInvalidRequest), New(ErrInvalidRequest, "Invalid UUID"))
 }
 
-// NewJSONResult sends a successful JSON response with optional pagination
 func (ctx *Ctx[V]) NewJSONResult(data interface{}, pagination *octypes.Pagination) {
     if ctx.done {
         return
@@ -641,7 +610,6 @@ func (ctx *Ctx[V]) NewJSONResult(data interface{}, pagination *octypes.Paginatio
     ctx.SendJSON(http.StatusOK, result)
 }
 
-// SendData sends a response with the provided status code, content type, and data
 func (ctx *Ctx[V]) SendData(statusCode int, contentType string, data []byte) {
     if ctx.done {
         return
@@ -661,7 +629,6 @@ func (ctx *Ctx[V]) SendData(statusCode int, contentType string, data []byte) {
     ctx.Done()
 }
 
-// logDataWriteError logs errors that occur when writing response data
 func (ctx *Ctx[V]) logDataWriteError(err error) {
     path := ctx.Request.URL.Path
     clientIP := ctx.ClientIP()
@@ -683,7 +650,6 @@ func (ctx *Ctx[V]) logDataWriteError(err error) {
     }
 }
 
-// File serves a file as the HTTP response
 func (ctx *Ctx[V]) File(urlPath string, filePath string) {
     if ctx.done {
         return
@@ -699,7 +665,6 @@ func (ctx *Ctx[V]) File(urlPath string, filePath string) {
     ctx.Done()
 }
 
-// FileFromFS serves a file from a http.FileSystem as the HTTP response
 func (ctx *Ctx[V]) FileFromFS(urlPath string, fs http.FileSystem, filePath string) {
     if ctx.done {
         return
@@ -715,7 +680,6 @@ func (ctx *Ctx[V]) FileFromFS(urlPath string, fs http.FileSystem, filePath strin
     ctx.Done()
 }
 
-// FormValue retrieves form values from the request
 func (ctx *Ctx[V]) FormValue(key string) string {
     if ctx.Request.Form == nil {
         err := ctx.Request.ParseForm()
@@ -730,12 +694,11 @@ func (ctx *Ctx[V]) FormValue(key string) string {
     return ctx.Request.FormValue(key)
 }
 
-// SendString sends a plain text string response
 func (ctx *Ctx[V]) SendString(statusCode int, s string) {
     ctx.SendData(statusCode, "text/plain", []byte(s))
 }
 
-// BaseResult is the standard response format for all API responses
+// Standard response envelope for all API responses
 type BaseResult struct {
     Data    interface{}         `json:"data,omitempty"`
     Time    float64             `json:"time"`

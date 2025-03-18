@@ -12,20 +12,20 @@ import (
     "github.com/rs/zerolog"
 )
 
-// HandlerFunc is the function type for route handlers
+// Route handler function type
 type HandlerFunc[V any] func(*Ctx[V])
 
-// MiddlewareFunc is the function type for middleware functions
+// Middleware function type
 type MiddlewareFunc[V any] func(HandlerFunc[V]) HandlerFunc[V]
 
-// routeEntry represents a route definition with handler and its middleware
+// Route definition with handler and middleware chain
 type routeEntry[V any] struct {
     handler    HandlerFunc[V]
     paramNames []string
     middleware []MiddlewareFunc[V]
 }
 
-// node represents a node in the router's trie structure
+// Node in the router's radix tree structure
 type node[V any] struct {
     staticChildren map[string]*node[V]
     paramChild     *node[V]
@@ -36,66 +36,57 @@ type node[V any] struct {
     parent         *node[V]
 }
 
-// Router is the main HTTP router implementation
+// HTTP router with radix tree-based routing
 type Router[V any] struct {
     root               *node[V]
     middleware         []MiddlewareFunc[V]
     preGroupMiddleware []MiddlewareFunc[V]
 }
 
-// NewRouter creates a new HTTP router instance
 func NewRouter[V any]() *Router[V] {
     return &Router[V]{
         root: &node[V]{},
     }
 }
 
-// UseGlobal adds middleware that applies to all routes before group middleware
+// Adds middleware that runs before group middleware
 func (r *Router[V]) UseGlobal(mw MiddlewareFunc[V]) {
     r.preGroupMiddleware = append(r.preGroupMiddleware, mw)
 }
 
-// Use adds global middleware to the router that applies after group middleware
+// Adds middleware that runs after group middleware
 func (r *Router[V]) Use(mw MiddlewareFunc[V]) {
     r.middleware = append(r.middleware, mw)
 }
 
-// GET registers a route that matches GET HTTP method
 func (r *Router[V]) GET(path string, handler HandlerFunc[V], middleware ...MiddlewareFunc[V]) {
     r.addRoute("GET", path, handler, middleware...)
 }
 
-// POST registers a route that matches POST HTTP method
 func (r *Router[V]) POST(path string, handler HandlerFunc[V], middleware ...MiddlewareFunc[V]) {
     r.addRoute("POST", path, handler, middleware...)
 }
 
-// PUT registers a route that matches PUT HTTP method
 func (r *Router[V]) PUT(path string, handler HandlerFunc[V], middleware ...MiddlewareFunc[V]) {
     r.addRoute("PUT", path, handler, middleware...)
 }
 
-// DELETE registers a route that matches DELETE HTTP method
 func (r *Router[V]) DELETE(path string, handler HandlerFunc[V], middleware ...MiddlewareFunc[V]) {
     r.addRoute("DELETE", path, handler, middleware...)
 }
 
-// PATCH registers a route that matches PATCH HTTP method
 func (r *Router[V]) PATCH(path string, handler HandlerFunc[V], middleware ...MiddlewareFunc[V]) {
     r.addRoute("PATCH", path, handler, middleware...)
 }
 
-// OPTIONS registers a route that matches OPTIONS HTTP method
 func (r *Router[V]) OPTIONS(path string, handler HandlerFunc[V], middleware ...MiddlewareFunc[V]) {
     r.addRoute("OPTIONS", path, handler, middleware...)
 }
 
-// HEAD registers a route that matches HEAD HTTP method
 func (r *Router[V]) HEAD(path string, handler HandlerFunc[V], middleware ...MiddlewareFunc[V]) {
     r.addRoute("HEAD", path, handler, middleware...)
 }
 
-// ANY registers a route that matches all HTTP methods
 func (r *Router[V]) ANY(path string, handler HandlerFunc[V], middleware ...MiddlewareFunc[V]) {
     methods := []string{"GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD"}
     for _, method := range methods {
@@ -103,19 +94,18 @@ func (r *Router[V]) ANY(path string, handler HandlerFunc[V], middleware ...Middl
     }
 }
 
-// Group represents a group of routes with a common prefix and middleware
+// Route group with common prefix and middleware
 type Group[V any] struct {
     prefix     string
     router     *Router[V]
     middleware []MiddlewareFunc[V]
 }
 
-// Use adds middleware to the route group
 func (g *Group[V]) Use(mw MiddlewareFunc[V]) {
     g.middleware = append(g.middleware, mw)
 }
 
-// Group creates a new route group with the given prefix and middleware
+// Creates a new route group with the given prefix and middleware
 func (r *Router[V]) Group(prefix string, middleware ...MiddlewareFunc[V]) *Group[V] {
     // Add nodes for the group prefix path
     current := r.root
@@ -151,63 +141,55 @@ func (r *Router[V]) Group(prefix string, middleware ...MiddlewareFunc[V]) *Group
     }
 }
 
-// GET registers a route in the group that matches GET HTTP method
 func (g *Group[V]) GET(path string, handler HandlerFunc[V], middleware ...MiddlewareFunc[V]) {
     fullPath := g.prefix + path
     allMiddleware := append(g.middleware, middleware...)
     g.router.GET(fullPath, handler, allMiddleware...)
 }
 
-// POST registers a route in the group that matches POST HTTP method
 func (g *Group[V]) POST(path string, handler HandlerFunc[V], middleware ...MiddlewareFunc[V]) {
     fullPath := g.prefix + path
     allMiddleware := append(g.middleware, middleware...)
     g.router.POST(fullPath, handler, allMiddleware...)
 }
 
-// PUT registers a route in the group that matches PUT HTTP method
 func (g *Group[V]) PUT(path string, handler HandlerFunc[V], middleware ...MiddlewareFunc[V]) {
     fullPath := g.prefix + path
     allMiddleware := append(g.middleware, middleware...)
     g.router.PUT(fullPath, handler, allMiddleware...)
 }
 
-// DELETE registers a route in the group that matches DELETE HTTP method
 func (g *Group[V]) DELETE(path string, handler HandlerFunc[V], middleware ...MiddlewareFunc[V]) {
     fullPath := g.prefix + path
     allMiddleware := append(g.middleware, middleware...)
     g.router.DELETE(fullPath, handler, allMiddleware...)
 }
 
-// PATCH registers a route in the group that matches PATCH HTTP method
 func (g *Group[V]) PATCH(path string, handler HandlerFunc[V], middleware ...MiddlewareFunc[V]) {
     fullPath := g.prefix + path
     allMiddleware := append(g.middleware, middleware...)
     g.router.PATCH(fullPath, handler, allMiddleware...)
 }
 
-// OPTIONS registers a route in the group that matches OPTIONS HTTP method
 func (g *Group[V]) OPTIONS(path string, handler HandlerFunc[V], middleware ...MiddlewareFunc[V]) {
     fullPath := g.prefix + path
     allMiddleware := append(g.middleware, middleware...)
     g.router.OPTIONS(fullPath, handler, allMiddleware...)
 }
 
-// HEAD registers a route in the group that matches HEAD HTTP method
 func (g *Group[V]) HEAD(path string, handler HandlerFunc[V], middleware ...MiddlewareFunc[V]) {
     fullPath := g.prefix + path
     allMiddleware := append(g.middleware, middleware...)
     g.router.HEAD(fullPath, handler, allMiddleware...)
 }
 
-// ANY registers a route in the group that matches all HTTP methods
 func (g *Group[V]) ANY(path string, handler HandlerFunc[V], middleware ...MiddlewareFunc[V]) {
     fullPath := g.prefix + path
     allMiddleware := append(g.middleware, middleware...)
     g.router.ANY(fullPath, handler, allMiddleware...)
 }
 
-// addRoute adds a route with associated handler and middleware
+// Core route registration method
 func (r *Router[V]) addRoute(method, path string, handler HandlerFunc[V], routeMW ...MiddlewareFunc[V]) {
     parts := splitPath(path)
     current := r.root
@@ -235,7 +217,7 @@ func (r *Router[V]) addRoute(method, path string, handler HandlerFunc[V], routeM
     r.createRouteEntry(current, method, path, handler, paramNames, routeMW)
 }
 
-// addWildcardNode adds a wildcard node to the router trie
+// Handles wildcard parameters (e.g. /*filepath)
 func (r *Router[V]) addWildcardNode(
     current *node[V], 
     part string, 
@@ -260,7 +242,6 @@ func (r *Router[V]) addWildcardNode(
     return current.wildcardChild, paramNames
 }
 
-// addStaticNode adds a static node to the router trie
 func (r *Router[V]) addStaticNode(current *node[V], part string) *node[V] {
     if current.staticChildren == nil {
         current.staticChildren = make(map[string]*node[V])
@@ -273,7 +254,6 @@ func (r *Router[V]) addStaticNode(current *node[V], part string) *node[V] {
     return current.staticChildren[part]
 }
 
-// createRouteEntry creates a route entry in the given node
 func (r *Router[V]) createRouteEntry(
     current *node[V], 
     method string, 
@@ -306,8 +286,7 @@ func (r *Router[V]) createRouteEntry(
     }
 }
 
-// addEmbeddedParameterNodeWithNames processes path segments with embedded parameters
-// and extracts parameter names
+// Handles paths with embedded parameters like /users/:id/profile
 func (r *Router[V]) addEmbeddedParameterNodeWithNames(
     current *node[V], 
     part string, 
@@ -350,7 +329,6 @@ func (r *Router[V]) addEmbeddedParameterNodeWithNames(
     return current, paramNames
 }
 
-// addTerminalStaticPart adds a static part at the end of a path segment
 func (r *Router[V]) addTerminalStaticPart(current *node[V], part string) *node[V] {
     if current.staticChildren == nil {
         current.staticChildren = make(map[string]*node[V])
@@ -363,7 +341,6 @@ func (r *Router[V]) addTerminalStaticPart(current *node[V], part string) *node[V
     return current.staticChildren[part]
 }
 
-// addStaticPartBeforeParam adds a static part before a parameter
 func (r *Router[V]) addStaticPartBeforeParam(current *node[V], staticPart string) *node[V] {
     if current.staticChildren == nil {
         current.staticChildren = make(map[string]*node[V])
@@ -376,7 +353,6 @@ func (r *Router[V]) addStaticPartBeforeParam(current *node[V], staticPart string
     return current.staticChildren[staticPart]
 }
 
-// extractParamName extracts a parameter name from a path segment
 func (r *Router[V]) extractParamName(part string) (string, string) {
     nextIdx := strings.IndexAny(part, ":*")
     
@@ -387,8 +363,7 @@ func (r *Router[V]) extractParamName(part string) (string, string) {
     return part, ""
 }
 
-// addEmbeddedParameterNode processes path segments with embedded parameters
-// but does not extract parameter names
+// Like addEmbeddedParameterNodeWithNames but doesn't collect parameter names
 func (r *Router[V]) addEmbeddedParameterNode(current *node[V], part string) *node[V] {
     for {
         // Exit when done processing the part
@@ -426,7 +401,7 @@ func (r *Router[V]) addEmbeddedParameterNode(current *node[V], part string) *nod
     return current
 }
 
-// buildMiddlewareChain constructs the middleware chain for a route
+// Builds complete middleware chain from global, group, and route middleware
 func (r *Router[V]) buildMiddlewareChain(current *node[V], routeMW []MiddlewareFunc[V]) []MiddlewareFunc[V] {
     // Start with global middleware
     var chain []MiddlewareFunc[V]
@@ -443,7 +418,7 @@ func (r *Router[V]) buildMiddlewareChain(current *node[V], routeMW []MiddlewareF
     return chain
 }
 
-// collectNodeMiddleware collects middleware from the node hierarchy
+// Collects middleware from all parent nodes in the route tree
 func (r *Router[V]) collectNodeMiddleware(current *node[V]) []MiddlewareFunc[V] {
     // Collect middleware from parent nodes
     var nodeMW []MiddlewareFunc[V]
@@ -471,7 +446,6 @@ func (r *Router[V]) collectNodeMiddleware(current *node[V]) []MiddlewareFunc[V] 
     return reversedMW
 }
 
-// globalMiddlewareChain returns the global middleware chain
 func (r *Router[V]) globalMiddlewareChain() []MiddlewareFunc[V] {
     var chain []MiddlewareFunc[V]
     
@@ -486,7 +460,7 @@ func (r *Router[V]) globalMiddlewareChain() []MiddlewareFunc[V] {
     return chain
 }
 
-// splitPath splits a URL path into segments
+// Efficiently splits URL path into segments for route matching
 func splitPath(path string) []string {
     // Handle empty paths
     if path == "" || path == "/" {
@@ -522,7 +496,7 @@ func splitPath(path string) []string {
     return parts
 }
 
-// ServeHTTP implements the http.Handler interface
+// http.Handler implementation for the router
 func (r *Router[V]) ServeHTTP(w http.ResponseWriter, req *http.Request) {
     path := req.URL.Path
     method := req.Method
@@ -556,7 +530,6 @@ func (r *Router[V]) ServeHTTP(w http.ResponseWriter, req *http.Request) {
     handler(ctx)
 }
 
-// addSecurityHeaders adds security headers to the response if enabled
 func (r *Router[V]) addSecurityHeaders(w http.ResponseWriter) {
     if EnableSecurityHeaders {
         w.Header().Set("X-Content-Type-Options", "nosniff")
@@ -565,7 +538,6 @@ func (r *Router[V]) addSecurityHeaders(w http.ResponseWriter) {
     }
 }
 
-// createNotFoundHandler creates a handler for non-matching routes
 func (r *Router[V]) createNotFoundHandler(req *http.Request, w http.ResponseWriter) HandlerFunc[V] {
     return func(ctx *Ctx[V]) {
         // Handle OPTIONS requests with allowed methods
@@ -580,7 +552,7 @@ func (r *Router[V]) createNotFoundHandler(req *http.Request, w http.ResponseWrit
     }
 }
 
-// search finds a matching route for the given method and path
+// Core route matching algorithm
 func (r *Router[V]) search(method, path string) (HandlerFunc[V], []MiddlewareFunc[V], map[string]string, bool) {
     parts := splitPath(path)
     current := r.root
@@ -628,7 +600,7 @@ func (r *Router[V]) search(method, path string) (HandlerFunc[V], []MiddlewareFun
     return r.createHandlerFromMatch(current, method, paramValues)
 }
 
-// tryMatchEmbeddedParam attempts to match a path segment with embedded parameters
+// Attempts to match path segments with embedded parameters
 func (r *Router[V]) tryMatchEmbeddedParam(
     current *node[V], 
     part string, 
@@ -657,7 +629,6 @@ func (r *Router[V]) tryMatchEmbeddedParam(
     return nil
 }
 
-// matchRemainingPart tries to match the remaining part of a path segment
 func (r *Router[V]) matchRemainingPart(
     node *node[V], 
     part string, 
@@ -696,7 +667,6 @@ func (r *Router[V]) matchRemainingPart(
     return nil
 }
 
-// createHandlerFromMatch creates a handler from a matched route
 func (r *Router[V]) createHandlerFromMatch(
     node *node[V], 
     method string, 
@@ -714,7 +684,6 @@ func (r *Router[V]) createHandlerFromMatch(
     return handlerEntry.handler, handlerEntry.middleware, params, true
 }
 
-// createParamsMap creates a map of parameter names to values
 func (r *Router[V]) createParamsMap(
     paramNames []string, 
     paramValues []string,
@@ -733,7 +702,7 @@ func (r *Router[V]) createParamsMap(
     return params
 }
 
-// wrapMiddleware ensures middleware doesn't execute if the context is marked as done
+// Safety wrapper for middleware to check done state
 func wrapMiddleware[V any](mw MiddlewareFunc[V]) MiddlewareFunc[V] {
     return func(next HandlerFunc[V]) HandlerFunc[V] {
         return func(ctx *Ctx[V]) {
@@ -745,7 +714,7 @@ func wrapMiddleware[V any](mw MiddlewareFunc[V]) MiddlewareFunc[V] {
     }
 }
 
-// wrapHandler ensures handlers don't execute if the context is marked as done
+// Safety wrapper for handlers to check done state
 func wrapHandler[V any](handler HandlerFunc[V]) HandlerFunc[V] {
     return func(ctx *Ctx[V]) {
         if ctx.done {
@@ -755,7 +724,7 @@ func wrapHandler[V any](handler HandlerFunc[V]) HandlerFunc[V] {
     }
 }
 
-// applyMiddleware chains middleware functions around a handler
+// Chains middleware functions around handler with proper ordering
 func applyMiddleware[V any](handler HandlerFunc[V], middleware []MiddlewareFunc[V]) HandlerFunc[V] {
     // Wrap the handler to check for done context
     handler = wrapHandler(handler)
@@ -769,7 +738,7 @@ func applyMiddleware[V any](handler HandlerFunc[V], middleware []MiddlewareFunc[
     return handler
 }
 
-// RecoveryMiddleware returns middleware that recovers from panics
+// Middleware that recovers from panics with detailed logging
 func RecoveryMiddleware[V any]() MiddlewareFunc[V] {
     return func(next HandlerFunc[V]) HandlerFunc[V] {
         return func(ctx *Ctx[V]) {
@@ -813,7 +782,7 @@ func RecoveryMiddleware[V any]() MiddlewareFunc[V] {
     }
 }
 
-// captureStackTrace captures the stack trace when a panic occurs
+// Captures a clean, formatted stack trace for panic logging
 func captureStackTrace() []string {
     var pcs [32]uintptr
     n := runtime.Callers(3, pcs[:])
@@ -832,7 +801,6 @@ func captureStackTrace() []string {
     return stackLines
 }
 
-// createZerologStackArray creates a zerolog array from stack frames
 func createZerologStackArray(stackLines []string) *zerolog.Array {
     zStack := zerolog.Arr()
     for _, line := range stackLines {
@@ -841,7 +809,6 @@ func createZerologStackArray(stackLines []string) *zerolog.Array {
     return zStack
 }
 
-// logClientAbort logs when a client aborts a request
 func logClientAbort[V any](ctx *Ctx[V]) {
     if EnableLoggerCheck && logger == nil {
         return

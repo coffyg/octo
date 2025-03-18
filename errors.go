@@ -1,4 +1,3 @@
-// Package octo provides a lightweight HTTP framework with router capabilities.
 package octo
 
 import (
@@ -11,10 +10,9 @@ import (
     "github.com/rs/zerolog"
 )
 
-// ErrorCode represents a unique error identifier used for client-side error handling.
+// Unique identifier for categorizing errors on both server and client sides
 type ErrorCode string
 
-// HTTP status codes mapped to common error scenarios.
 const (
     // Common errors
     ErrUnknown         ErrorCode = "err_unknown_error"
@@ -42,35 +40,25 @@ const (
     ErrTokenInvalid    ErrorCode = "err_token_invalid"
 )
 
-// OctoError represents a standardized application error with context.
+// Standardized error type with rich context for debugging and client communication
 type OctoError struct {
-    // Original is the original error that was wrapped
-    Original error
+    Original   error      // The underlying error being wrapped
+    Code       ErrorCode  // Client-facing error code
+    StatusCode int        // HTTP status code
+    Message    string     // Human-readable error message
     
-    // Code is the error code string for client-side error handling
-    Code ErrorCode
-    
-    // StatusCode is the HTTP status code associated with this error
-    StatusCode int
-    
-    // Message is a human-readable error message
-    Message string
-    
-    // File and line information where the error occurred
-    file string
-    line int
-    
-    // Function name where the error occurred
-    function string
+    // Debug information automatically captured
+    file       string
+    line       int
+    function   string
 }
 
-// APIErrorDef maps error codes to status codes and default messages.
+// Maps error codes to HTTP status codes and default messages
 type APIErrorDef struct {
     Message    string
     StatusCode int
 }
 
-// PredefinedErrors maps error codes to their definitions.
 var PredefinedErrors = map[ErrorCode]APIErrorDef{
     ErrUnknown:         {"Unknown error", http.StatusInternalServerError},
     ErrInternal:        {"Internal error", http.StatusInternalServerError},
@@ -91,7 +79,6 @@ var PredefinedErrors = map[ErrorCode]APIErrorDef{
     ErrTokenInvalid:    {"Invalid authentication token", http.StatusUnauthorized},
 }
 
-// Error returns the error message with context information.
 func (e *OctoError) Error() string {
     base := fmt.Sprintf("[octo:%s] %s", e.Code, e.Message)
     if e.Original != nil {
@@ -100,12 +87,10 @@ func (e *OctoError) Error() string {
     return base
 }
 
-// Unwrap implements the errors.Unwrap interface.
 func (e *OctoError) Unwrap() error {
     return e.Original
 }
 
-// New creates a new OctoError with the given code and message.
 func New(code ErrorCode, msg string) *OctoError {
     def, ok := PredefinedErrors[code]
     if !ok {
@@ -122,7 +107,7 @@ func New(code ErrorCode, msg string) *OctoError {
         Message:    msg,
     }
     
-    // Capture caller information
+    // Automatically capture caller information for debugging
     if pc, file, line, ok := runtime.Caller(1); ok {
         err.file = file
         err.line = line
@@ -134,23 +119,20 @@ func New(code ErrorCode, msg string) *OctoError {
     return err
 }
 
-// Newf creates a new OctoError with formatted message.
 func Newf(code ErrorCode, format string, args ...interface{}) *OctoError {
     return New(code, fmt.Sprintf(format, args...))
 }
 
-// Wrap wraps an existing error with additional context.
 func Wrap(err error, code ErrorCode, msg string) *OctoError {
     if err == nil {
         return nil
     }
     
-    // If already an OctoError, just update the fields
+    // If already an OctoError, update its fields instead of creating new one
     if octoErr, ok := err.(*OctoError); ok {
         if code != "" {
             octoErr.Code = code
             
-            // Update status code based on the new error code
             if def, ok := PredefinedErrors[code]; ok {
                 octoErr.StatusCode = def.StatusCode
             }
@@ -160,7 +142,6 @@ func Wrap(err error, code ErrorCode, msg string) *OctoError {
             octoErr.Message = msg
         }
         
-        // Update caller information
         if pc, file, line, ok := runtime.Caller(1); ok {
             octoErr.file = file
             octoErr.line = line
@@ -172,11 +153,10 @@ func Wrap(err error, code ErrorCode, msg string) *OctoError {
         return octoErr
     }
     
-    // Create a new OctoError wrapping the original error
+    // Create a new OctoError wrapping the original
     octoErr := New(code, msg)
     octoErr.Original = err
     
-    // Update caller information
     if pc, file, line, ok := runtime.Caller(1); ok {
         octoErr.file = file
         octoErr.line = line
@@ -188,12 +168,10 @@ func Wrap(err error, code ErrorCode, msg string) *OctoError {
     return octoErr
 }
 
-// Wrapf wraps an existing error with a formatted message.
 func Wrapf(err error, code ErrorCode, format string, args ...interface{}) *OctoError {
     return Wrap(err, code, fmt.Sprintf(format, args...))
 }
 
-// Is checks if target is an OctoError with the specified code.
 func Is(err error, code ErrorCode) bool {
     if err == nil {
         return false
@@ -207,9 +185,7 @@ func Is(err error, code ErrorCode) bool {
     return false
 }
 
-// Assert checks a condition and returns an error if the condition is false.
-// This implements the "Assert all function preconditions and postconditions" safety rule
-// from the coding style guide.
+// Implements the safety rule of checking function preconditions and postconditions
 func Assert(condition bool, code ErrorCode, message string) error {
     if !condition {
         return New(code, message)
@@ -217,7 +193,6 @@ func Assert(condition bool, code ErrorCode, message string) error {
     return nil
 }
 
-// AssertWithError checks a condition and returns the provided error if the condition is false.
 func AssertWithError(condition bool, err error) error {
     if !condition {
         return err
@@ -225,15 +200,14 @@ func AssertWithError(condition bool, err error) error {
     return nil
 }
 
-// MustAssert checks a condition and panics if the condition is false.
-// Use this only for critical internal assertions that should never fail.
+// For critical assertions where failure indicates a programming error
 func MustAssert(condition bool, message string) {
     if !condition {
         panic(New(ErrInternal, "Assertion failed: "+message))
     }
 }
 
-// LogError logs an error with appropriate context and stack trace.
+// Logs errors with appropriate context and stack trace
 func LogError(logger *zerolog.Logger, err error) {
     if err == nil || logger == nil {
         return
@@ -241,7 +215,7 @@ func LogError(logger *zerolog.Logger, err error) {
     
     event := logger.Error().Err(err)
     
-    // Add caller info for standard errors
+    // Add caller information based on error type
     if _, ok := err.(*OctoError); !ok {
         if pc, file, line, ok := runtime.Caller(1); ok {
             shortFile := file
@@ -260,7 +234,6 @@ func LogError(logger *zerolog.Logger, err error) {
             event = event.Str("file", shortFile).Int("line", line).Str("function", funcName)
         }
     } else {
-        // For OctoErrors, add the specific code and status
         octoErr := err.(*OctoError)
         event = event.
             Str("error_code", string(octoErr.Code)).
@@ -273,7 +246,7 @@ func LogError(logger *zerolog.Logger, err error) {
     event.Msg("[octo-error] Error occurred")
 }
 
-// LogPanic logs a recovered panic with stack trace.
+// Handles and logs recovered panics with full context
 func LogPanic(logger *zerolog.Logger, recovered interface{}, stack []byte) {
     if logger == nil {
         return

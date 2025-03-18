@@ -88,7 +88,15 @@ Beyond these rules:
 
 - **Write descriptive commit messages** that inform and delight the reader, because your commit messages are being read.
 
-- Don't forget to say why. Code alone is not documentation. Use comments to explain why you wrote the code the way you did. Show your workings.
+## Comments
+
+- **Use comments with parsimony.** Most code should be self-explanatory through good naming, clear structure, and intuitive design. Comments should be reserved for complex logic that cannot be simplified further.
+
+- **Write comments as if speaking to a human colleague.** Use natural language that explains the "why" behind the code, not the "what" that is already visible in the code itself.
+
+- **Focus comments on intent and rationale.** Explain design decisions, tradeoffs considered, or potential edge cases rather than restating what the code does.
+
+- **Keep comments updated.** Outdated comments are worse than no comments at all. When changing code, review and update the associated comments.
 
 - Comments should be complete sentences with proper punctuation. Comments after the end of a line _can_ be phrases with no punctuation.
 

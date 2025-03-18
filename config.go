@@ -7,42 +7,37 @@ import (
 
 var logger *zerolog.Logger
 
-// BodySizeMaxBytes defines the maximum body size for all requests
+// Maximum request body size (10MB default)
 var bodySizeMaxBytes int64 = 10 * 1024 * 1024
 
-// DeferBufferAllocation controls buffer allocation in rwriter.go
+// When true, buffer allocation in rwriter.go is deferred until needed
 var DeferBufferAllocation = true
 
-// EnableLoggerCheck guards logger != nil checks in ctx.go
+// Guards against nil logger access
 var EnableLoggerCheck = true
 
-// EnableSecurityHeaders adds simple security headers in router.go
+// When true, adds standard security headers to all responses
 var EnableSecurityHeaders = false
 
-// SetupOctoLogger configures the zerolog logger for Octo
 func SetupOctoLogger(l *zerolog.Logger) {
     zerolog.ErrorStackMarshaler = pkgerrors.MarshalStack
     logger = l
 }
 
-// SetupOcto configures the zerolog logger and maximum body size
 func SetupOcto(l *zerolog.Logger, maxBytes int64) {
     zerolog.ErrorStackMarshaler = pkgerrors.MarshalStack
     logger = l
     bodySizeMaxBytes = maxBytes
 }
 
-// GetLogger returns the configured logger instance
 func GetLogger() *zerolog.Logger {
     return logger
 }
 
-// ChangeMaxBodySize updates the maximum allowed request body size
 func ChangeMaxBodySize(maxBytes int64) {
     bodySizeMaxBytes = maxBytes
 }
 
-// GetMaxBodySize returns the current maximum body size setting
 func GetMaxBodySize() int64 {
     return bodySizeMaxBytes
 }
