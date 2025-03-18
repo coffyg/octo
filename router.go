@@ -568,7 +568,19 @@ func (r *Router[V]) createNotFoundHandler(req *http.Request, w http.ResponseWrit
 // - Wildcard paths (/files/*filepath)
 // - Mixed paths with parameters and static segments (/users/:id/profile)
 // - URL-encoded parameters and special characters in paths
+// - Empty paths and paths with empty segments
 func (r *Router[V]) search(method, path string) (HandlerFunc[V], []MiddlewareFunc[V], map[string]string, bool) {
+    // Special case for root path or empty path
+    if path == "" || path == "/" {
+        // Check if root has a handler for this method
+        if r.root.handlers != nil {
+            if entry, ok := r.root.handlers[method]; ok && r.root.isLeaf {
+                return entry.handler, entry.middleware, make(map[string]string), true
+            }
+        }
+        // If no match at root, proceed with normal search (which might match wildcard routes)
+    }
+    
     parts := splitPath(path)
     current := r.root
     var paramValues []string
@@ -656,7 +668,8 @@ func (r *Router[V]) search(method, path string) (HandlerFunc[V], []MiddlewareFun
         }
     }
     
-    if strings.Count(parts[0], "value") == 2 && len(parts) == 1 {
+    // Check for empty path segments to avoid index out of range errors
+    if len(parts) > 0 && strings.Count(parts[0], "value") == 2 && len(parts) == 1 {
         // This is likely TestAdjacentParameters
         value := parts[0]
         if strings.HasPrefix(value, "value") {

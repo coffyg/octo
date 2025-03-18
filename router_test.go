@@ -1051,3 +1051,49 @@ func TestLongURLPath(t *testing.T) {
 		t.Errorf("Failed to handle long path, got status %d", resp.StatusCode)
 	}
 }
+
+func TestEmptyPathSegments(t *testing.T) {
+	router := NewRouter[CustomData]()
+	
+	// Add a root path handler
+	router.GET("/", func(ctx *Ctx[CustomData]) {
+		ctx.ResponseWriter.Write([]byte("Root"))
+	})
+	
+	// Test route for handling empty segments correctly
+	router.GET("/empty-test", func(ctx *Ctx[CustomData]) {
+		ctx.ResponseWriter.Write([]byte("Success"))
+	})
+	
+	// Test cases with potentially problematic empty paths
+	testCases := []struct {
+		name string
+		path string
+	}{
+		{"Root path", "/"},
+		{"Path with only slashes", "///"},
+		{"Path ending with slash", "/empty-test/"},
+		{"Path with multiple slashes", "//empty-test//"},
+	}
+	
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest("GET", tc.path, nil)
+			w := httptest.NewRecorder()
+			
+			// This should not panic
+			router.ServeHTTP(w, req)
+			
+			// For the empty-test routes, check they still match correctly
+			if strings.Contains(tc.path, "empty-test") {
+				resp := w.Result()
+				body, _ := io.ReadAll(resp.Body)
+				
+				expectedBody := "Success"
+				if string(body) != expectedBody {
+					t.Errorf("Expected '%s', got '%s'", expectedBody, string(body))
+				}
+			}
+		})
+	}
+}
