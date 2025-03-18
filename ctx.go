@@ -5,13 +5,11 @@ import (
     "context"
     "encoding/json"
     "encoding/xml"
-    "fmt"
     "io"
     "mime"
     "net"
     "net/http"
     "net/url"
-    "runtime"
     "strconv"
     "strings"
     "time"
@@ -256,7 +254,7 @@ func (ctx *Ctx[V]) clientIPFromRemoteAddr() string {
 func (ctx *Ctx[V]) Cookie(name string) (string, error) {
     cookie, err := ctx.Request.Cookie(name)
     if err != nil {
-        return "", errors.Wrap(err, "cookie not found")
+        return "", Wrap(err, ErrInvalidRequest, "cookie not found")
     }
     return cookie.Value, nil
 }
@@ -290,71 +288,77 @@ func (ctx *Ctx[V]) SetCookie(name, value string, maxAge int, path, domain string
 func (ctx *Ctx[V]) ShouldBindJSON(obj interface{}) error {
     err := ctx.NeedBody()
     if err != nil {
-        return errors.Wrap(err, "failed to read request body")
+        return Wrap(err, ErrInvalidJSON, "failed to read request body")
     }
     
     if len(ctx.Body) == 0 {
-        return errors.New("request body is empty")
+        return New(ErrInvalidJSON, "request body is empty")
     }
     
-    return errors.Wrap(
-        json.Unmarshal(ctx.Body, obj),
-        "failed to unmarshal JSON",
-    )
+    unmarshalErr := json.Unmarshal(ctx.Body, obj)
+    if unmarshalErr != nil {
+        return Wrap(unmarshalErr, ErrInvalidJSON, "failed to unmarshal JSON")
+    }
+    
+    return nil
 }
 
 // ShouldBindXML binds the request body into an interface using XML
 func (ctx *Ctx[V]) ShouldBindXML(obj interface{}) error {
     err := ctx.NeedBody()
     if err != nil {
-        return errors.Wrap(err, "failed to read request body")
+        return Wrap(err, ErrInvalidRequest, "failed to read request body")
     }
     
     if len(ctx.Body) == 0 {
-        return errors.New("request body is empty")
+        return New(ErrInvalidRequest, "request body is empty")
     }
     
-    return errors.Wrap(
-        xml.Unmarshal(ctx.Body, obj),
-        "failed to unmarshal XML",
-    )
+    unmarshalErr := xml.Unmarshal(ctx.Body, obj)
+    if unmarshalErr != nil {
+        return Wrap(unmarshalErr, ErrInvalidRequest, "failed to unmarshal XML")
+    }
+    
+    return nil
 }
 
 // ShouldBindForm binds form data into the provided object
 func (ctx *Ctx[V]) ShouldBindForm(obj interface{}) error {
     err := ctx.NeedBody()
     if err != nil {
-        return errors.Wrap(err, "failed to read request body")
+        return Wrap(err, ErrInvalidForm, "failed to read request body")
     }
     
     if err := ctx.Request.ParseForm(); err != nil {
-        return errors.Wrap(err, "failed to parse form")
+        return Wrap(err, ErrInvalidForm, "failed to parse form")
     }
     
     values := ctx.Request.PostForm
-    return errors.Wrap(
-        mapForm(obj, values),
-        "failed to map form values",
-    )
+    if mapErr := mapForm(obj, values); mapErr != nil {
+        return Wrap(mapErr, ErrInvalidForm, "failed to map form values")
+    }
+    
+    return nil
 }
 
 // ShouldBindMultipartForm binds multipart form data into the provided object
 func (ctx *Ctx[V]) ShouldBindMultipartForm(obj interface{}) error {
     err := ctx.NeedBody()
     if err != nil {
-        return errors.Wrap(err, "failed to read request body")
+        return Wrap(err, ErrInvalidForm, "failed to read request body")
     }
     
     // 32MB max memory
     if err := ctx.Request.ParseMultipartForm(32 << 20); err != nil {
-        return errors.Wrap(err, "failed to parse multipart form")
+        return Wrap(err, ErrInvalidForm, "failed to parse multipart form")
     }
     
     values := ctx.Request.MultipartForm.Value
-    return errors.Wrap(
-        mapForm(obj, values),
-        "failed to map multipart form values",
-    )
+    if mapErr := mapForm(obj, values); mapErr != nil {
+        return Wrap(mapErr, ErrInvalidForm, "failed to map multipart form values")
+    }
+    
+    return nil
 }
 
 // mapForm maps form values into the provided struct
@@ -378,7 +382,7 @@ func (ctx *Ctx[V]) ShouldBind(obj interface{}) error {
     case "multipart/form-data":
         return ctx.ShouldBindMultipartForm(obj)
     default:
-        return fmt.Errorf("unsupported content type: %s", contentType)
+        return Newf(ErrInvalidRequest, "unsupported content type: %s", contentType)
     }
 }
 
@@ -408,12 +412,12 @@ func (ctx *Ctx[V]) readBodyWithSizeLimit() error {
     
     if err != nil {
         ctx.logBodyReadError(err)
-        return errors.Wrap(err, "failed to read request body")
+        return Wrap(err, ErrInvalidRequest, "failed to read request body")
     }
 
     // Check if body exceeds maximum size
     if int64(len(body)) > GetMaxBodySize() {
-        err := errors.New("request body too large")
+        err := New(ErrInvalidRequest, "request body too large")
         ctx.logBodySizeError(err)
         return err
     }
@@ -428,17 +432,13 @@ func (ctx *Ctx[V]) readBodyWithSizeLimit() error {
 
 // logBodyReadError logs body read errors with logger check
 func (ctx *Ctx[V]) logBodyReadError(err error) {
-    if EnableLoggerCheck {
-        if logger != nil {
-            logger.Error().Err(err).Msg("[octo] failed to read request body")
-        }
-    } else {
-        logger.Error().Err(err).Msg("[octo] failed to read request body")
-    }
+    octoErr := Wrap(err, ErrInvalidRequest, "failed to read request body")
+    LogError(logger, octoErr)
 }
 
 // logBodySizeError logs body size errors with logger check
 func (ctx *Ctx[V]) logBodySizeError(err error) {
+    // Create extended event with body size info
     if EnableLoggerCheck {
         if logger != nil {
             logger.Error().
@@ -460,18 +460,40 @@ func (ctx *Ctx[V]) SendError(code string, err error) {
         return
     }
     
+    // Convert string code to ErrorCode
+    errorCode := ErrorCode(code)
+    
     // Get the API error definition or fall back to unknown error
-    apiError, ok := APIErrors[code]
+    apiErrorDef, ok := PredefinedErrors[errorCode]
     if !ok {
-        apiError = APIErrors["err_unknown_error"]
+        apiErrorDef = PredefinedErrors[ErrUnknown]
+        errorCode = ErrUnknown
+    }
+    
+    // Create proper OctoError if not already one
+    var octoErr *OctoError
+    if err == nil {
+        octoErr = New(errorCode, "")
+    } else if !errors.As(err, &octoErr) {
+        octoErr = Wrap(err, errorCode, "")
     }
     
     // Build the error message and response
-    message := ctx.buildErrorMessage(apiError.Message, err)
-    result := ctx.createErrorResult(code, message)
+    message := octoErr.Message
+    if message == "" {
+        message = apiErrorDef.Message
+    }
     
-    // Send the JSON response with the appropriate status code
-    ctx.SendJSON(apiError.Code, result)
+    if octoErr.Original != nil {
+        message = message + ": " + octoErr.Original.Error()
+    }
+    
+    // Log the error
+    LogError(logger, octoErr)
+    
+    // Create and send response
+    result := ctx.createErrorResult(string(errorCode), message)
+    ctx.SendJSON(octoErr.StatusCode, result)
 }
 
 // SendErrorStatus sends an error response with a specific HTTP status code
@@ -480,57 +502,84 @@ func (ctx *Ctx[V]) SendErrorStatus(statusCode int, code string, err error) {
         return
     }
     
+    // Convert string code to ErrorCode
+    errorCode := ErrorCode(code)
+    
     // Get the API error definition or fall back to unknown error
-    apiError, ok := APIErrors[code]
+    apiErrorDef, ok := PredefinedErrors[errorCode]
     if !ok {
-        apiError = APIErrors["err_unknown_error"]
+        apiErrorDef = PredefinedErrors[ErrUnknown]
+        errorCode = ErrUnknown
     }
     
-    // Build the error message and response
-    message := ctx.buildErrorMessage(apiError.Message, err)
-    result := ctx.createErrorResult(code, message)
+    // Create proper OctoError if not already one
+    var octoErr *OctoError
+    if err == nil {
+        octoErr = New(errorCode, "")
+    } else if !errors.As(err, &octoErr) {
+        octoErr = Wrap(err, errorCode, "")
+    }
     
-    // Send the JSON response with the provided status code
+    // Use provided status code instead of the default one
+    octoErr.StatusCode = statusCode
+    
+    // Build the error message and response
+    message := octoErr.Message
+    if message == "" {
+        message = apiErrorDef.Message
+    }
+    
+    if octoErr.Original != nil {
+        message = message + ": " + octoErr.Original.Error()
+    }
+    
+    // Log the error
+    LogError(logger, octoErr)
+    
+    // Create and send response
+    result := ctx.createErrorResult(string(errorCode), message)
     ctx.SendJSON(statusCode, result)
 }
 
-// buildErrorMessage creates the error message and logs the error if provided
+// (deprecated) buildErrorMessage is maintained for backward compatibility
+// New code should use OctoError directly
 func (ctx *Ctx[V]) buildErrorMessage(baseMessage string, err error) string {
     if err == nil {
         return baseMessage
     }
     
-    // Append the error message to the base message
-    message := baseMessage + ": " + err.Error()
+    // Create an OctoError
+    octoErr := Wrap(err, ErrUnknown, baseMessage)
     
-    // Log the error with caller information
-    if pc, file, line, ok := runtime.Caller(2); ok {
-        funcName := runtime.FuncForPC(pc).Name()
-        ctx.logError(err, file, line, funcName)
+    // Log it properly
+    LogError(logger, octoErr)
+    
+    // Return the formatted message
+    if octoErr.Message != "" {
+        if octoErr.Original != nil {
+            return octoErr.Message + ": " + octoErr.Original.Error()
+        }
+        return octoErr.Message
     }
     
-    return message
+    return baseMessage + ": " + err.Error()
 }
 
-// logError logs an error with caller information
+// (deprecated) logError is maintained for backward compatibility
+// New code should use LogError directly
 func (ctx *Ctx[V]) logError(err error, file string, line int, funcName string) {
-    if EnableLoggerCheck {
-        if logger != nil {
-            logger.Error().
-                Err(err).
-                Str("file", file).
-                Int("line", line).
-                Str("function", funcName).
-                Msg("[octo-error] API error occurred")
-        }
-    } else {
-        logger.Error().
-            Err(err).
-            Str("file", file).
-            Int("line", line).
-            Str("function", funcName).
-            Msg("[octo-error] API error occurred")
+    // Create temporary OctoError with the file and line info
+    octoErr := &OctoError{
+        Original:   err,
+        Code:       ErrInternal,
+        StatusCode: http.StatusInternalServerError,
+        file:       file,
+        line:       line,
+        function:   funcName,
     }
+    
+    // Log using the new system
+    LogError(logger, octoErr)
 }
 
 // createErrorResult creates a BaseResult for error responses
@@ -557,7 +606,7 @@ func (ctx *Ctx[V]) Send404() {
     if ctx.done {
         return
     }
-    ctx.SendError("err_not_found", nil)
+    ctx.SendError(string(ErrNotFound), nil)
 }
 
 // Send401 sends a 401 Unauthorized error response
@@ -565,7 +614,7 @@ func (ctx *Ctx[V]) Send401() {
     if ctx.done {
         return
     }
-    ctx.SendError("err_unauthorized", nil)
+    ctx.SendError(string(ErrUnauthorized), nil)
 }
 
 // SendInvalidUUID sends an error response for invalid UUID
@@ -573,7 +622,7 @@ func (ctx *Ctx[V]) SendInvalidUUID() {
     if ctx.done {
         return
     }
-    ctx.SendError("err_invalid_uuid", nil)
+    ctx.SendError(string(ErrInvalidRequest), New(ErrInvalidRequest, "Invalid UUID"))
 }
 
 // NewJSONResult sends a successful JSON response with optional pagination
@@ -641,8 +690,8 @@ func (ctx *Ctx[V]) File(urlPath string, filePath string) {
     }
     
     if filePath == "" {
-        err := fmt.Errorf("file path is empty")
-        ctx.SendError("err_internal_error", err)
+        err := New(ErrInternal, "file path is empty")
+        ctx.SendError(string(ErrInternal), err)
         return
     }
     
@@ -657,8 +706,8 @@ func (ctx *Ctx[V]) FileFromFS(urlPath string, fs http.FileSystem, filePath strin
     }
     
     if fs == nil {
-        err := fmt.Errorf("http.FileSystem is nil")
-        ctx.SendError("err_internal_error", err)
+        err := New(ErrInternal, "http.FileSystem is nil")
+        ctx.SendError(string(ErrInternal), err)
         return
     }
     
@@ -686,12 +735,6 @@ func (ctx *Ctx[V]) SendString(statusCode int, s string) {
     ctx.SendData(statusCode, "text/plain", []byte(s))
 }
 
-// APIError represents an API error with a message and HTTP status code
-type APIError struct {
-    Message string
-    Code    int
-}
-
 // BaseResult is the standard response format for all API responses
 type BaseResult struct {
     Data    interface{}         `json:"data,omitempty"`
@@ -700,20 +743,4 @@ type BaseResult struct {
     Message string              `json:"message,omitempty"`
     Paging  *octypes.Pagination `json:"paging,omitempty"`
     Token   string              `json:"token,omitempty"`
-}
-
-// APIErrors defines standard error types with messages and status codes
-var APIErrors = map[string]*APIError{
-    "err_unknown_error":            {"Unknown error", http.StatusInternalServerError},
-    "err_internal_error":           {"Internal error", http.StatusInternalServerError},
-    "err_db_error":                 {"Database error", http.StatusInternalServerError},
-    "err_invalid_request":          {"Invalid request", http.StatusBadRequest},
-    "err_invalid_email_address":    {"Invalid email address", http.StatusBadRequest},
-    "err_all_fields_are_mandatory": {"Missing required fields", http.StatusBadRequest},
-    "err_email_not_configured":     {"Email not configured", http.StatusInternalServerError},
-    "err_unauthorized":             {"Unauthorized", http.StatusUnauthorized},
-    "err_not_found":                {"Not found", http.StatusNotFound},
-    "err_invalid_uuid":             {"Invalid UUID", http.StatusBadRequest},
-    "err_json_error":               {"JSON error", http.StatusBadRequest},
-    // Add other error codes as needed
 }

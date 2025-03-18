@@ -774,27 +774,38 @@ func RecoveryMiddleware[V any]() MiddlewareFunc[V] {
     return func(next HandlerFunc[V]) HandlerFunc[V] {
         return func(ctx *Ctx[V]) {
             defer func() {
-                if err := recover(); err != nil {
+                if recovered := recover(); recovered != nil {
                     // Capture stack trace
                     stack := captureStackTrace()
+                    stackBytes := []byte(strings.Join(stack, "\n"))
                     
-                    // Create zerolog array with stack frames
-                    zStack := createZerologStackArray(stack)
+                    // Create a proper OctoError
+                    var err error
+                    switch v := recovered.(type) {
+                    case error:
+                        err = v
+                    case string:
+                        err = errors.New(v)
+                    default:
+                        err = errors.Errorf("%v", recovered)
+                    }
                     
-                    // Wrap the error
-                    wrappedErr := wrapPanicError(err)
+                    // Wrap as OctoError
+                    octoErr := Wrap(err, ErrInternal, "Panic recovered")
                     
                     // Handle client aborts differently
-                    if errors.Is(wrappedErr, http.ErrAbortHandler) {
+                    if errors.Is(err, http.ErrAbortHandler) {
                         logClientAbort(ctx)
                         return
                     }
                     
                     // Log the panic
-                    logPanic(ctx, wrappedErr, zStack)
+                    LogPanic(logger, recovered, stackBytes)
                     
-                    // Return 500 error if not JSON response
-                    sendErrorResponse(ctx)
+                    // Send error response
+                    if !ctx.ResponseWriter.Written() {
+                        ctx.SendError(string(ErrInternal), octoErr)
+                    }
                 }
             }()
             next(ctx)
@@ -830,69 +841,14 @@ func createZerologStackArray(stackLines []string) *zerolog.Array {
     return zStack
 }
 
-// wrapPanicError wraps a panic value in an error with stack trace
-func wrapPanicError(err interface{}) error {
-    var wrappedErr error
-    switch e := err.(type) {
-    case error:
-        wrappedErr = errors.WithStack(e)
-    default:
-        wrappedErr = errors.Errorf("%v", e)
-    }
-    return wrappedErr
-}
-
 // logClientAbort logs when a client aborts a request
 func logClientAbort[V any](ctx *Ctx[V]) {
-    message := "[octo-panic] Client aborted request (panic recovered)"
+    if EnableLoggerCheck && logger == nil {
+        return
+    }
     
-    if EnableLoggerCheck {
-        if logger != nil {
-            logger.Warn().
-                Str("path", ctx.Request.URL.Path).
-                Str("method", ctx.Request.Method).
-                Msg(message)
-        }
-    } else {
-        logger.Warn().
-            Str("path", ctx.Request.URL.Path).
-            Str("method", ctx.Request.Method).
-            Msg(message)
-    }
-}
-
-// logPanic logs panic details using zerolog
-func logPanic[V any](ctx *Ctx[V], wrappedErr error, zStack *zerolog.Array) {
-    message := "[octo-panic] Panic recovered"
-    
-    if EnableLoggerCheck {
-        if logger != nil {
-            logger.Error().
-                Err(wrappedErr).
-                Stack().
-                Array("stack_array", zStack).
-                Str("path", ctx.Request.URL.Path).
-                Str("method", ctx.Request.Method).
-                Str("ip", ctx.ClientIP()).
-                Msg(message)
-        }
-    } else {
-        logger.Error().
-            Err(wrappedErr).
-            Stack().
-            Array("stack_array", zStack).
-            Str("path", ctx.Request.URL.Path).
-            Str("method", ctx.Request.Method).
-            Str("ip", ctx.ClientIP()).
-            Msg(message)
-    }
-}
-
-// sendErrorResponse sends a 500 error response if not a JSON response
-func sendErrorResponse[V any](ctx *Ctx[V]) {
-    contentType := ctx.ResponseWriter.Header().Get("Content-Type")
-    if !strings.Contains(contentType, "application/json") {
-        http.Error(ctx.ResponseWriter, "Internal Server Error", 
-            http.StatusInternalServerError)
-    }
+    logger.Warn().
+        Str("path", ctx.Request.URL.Path).
+        Str("method", ctx.Request.Method).
+        Msg("[octo-panic] Client aborted request (panic recovered)")
 }

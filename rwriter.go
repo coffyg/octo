@@ -78,3 +78,8 @@ func (w *ResponseWriterWrapper) Push(target string, opts *http.PushOptions) erro
     }
     return http.ErrNotSupported
 }
+
+// Written returns true if the response writer has already written data
+func (w *ResponseWriterWrapper) Written() bool {
+    return w.Body != nil && w.Body.Len() > 0
+}
