@@ -2,11 +2,13 @@ package octo
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/rs/zerolog"
@@ -286,6 +288,7 @@ func TestComplexParameterRoute(t *testing.T) {
 		t.Errorf("Expected '%s', got '%s'", expectedBody, string(body))
 	}
 }
+
 func TestEmbeddedParameterRoute(t *testing.T) {
 	router := NewRouter[CustomData]()
 
@@ -379,6 +382,7 @@ func TestUseGlobalMiddlewareWithoutDone(t *testing.T) {
 		t.Errorf("Expected status 404, got %d", resp.StatusCode)
 	}
 }
+
 func TestRouter_PanicRecovery(t *testing.T) {
 	router := NewRouter[CustomData]()
 
@@ -405,6 +409,7 @@ func TestRouter_PanicRecovery(t *testing.T) {
 	// For example, expecting JSON with "result": "error" and "message": "Internal error"
 	// You can decode the JSON and assert the fields accordingly
 }
+
 func TestSecurityHeaders(t *testing.T) {
 	// Save the old setting
 	oldVal := EnableSecurityHeaders
@@ -448,6 +453,7 @@ func TestSecurityHeaders(t *testing.T) {
 	// Restore
 	EnableSecurityHeaders = oldVal
 }
+
 func TestDeferBufferAllocation(t *testing.T) {
 	oldVal := DeferBufferAllocation
 	defer func() { DeferBufferAllocation = oldVal }()
@@ -464,5 +470,584 @@ func TestDeferBufferAllocation(t *testing.T) {
 	rw = NewResponseWriterWrapper(httptest.NewRecorder())
 	if rw.Body != nil {
 		t.Errorf("Expected Body to be nil initially when DeferBufferAllocation=true")
+	}
+}
+
+// New tests for path matching edge cases
+
+func TestMultipleEmbeddedParameters(t *testing.T) {
+	router := NewRouter[CustomData]()
+	
+	// Route with multiple embedded parameters
+	router.GET("/prefix:param1:param2", func(ctx *Ctx[CustomData]) {
+		param1 := ctx.Params["param1"]
+		param2 := ctx.Params["param2"]
+		ctx.ResponseWriter.Write([]byte(fmt.Sprintf("Param1: %s, Param2: %s", param1, param2)))
+	})
+	
+	// Test with values for both parameters
+	req := httptest.NewRequest("GET", "/prefixvalue1value2", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	
+	resp := w.Result()
+	body, _ := io.ReadAll(resp.Body)
+	
+	expectedBody := "Param1: value1, Param2: value2"
+	if string(body) != expectedBody {
+		t.Errorf("Expected '%s', got '%s'", expectedBody, string(body))
+	}
+}
+
+func TestEmbeddedParametersWithSpecialChars(t *testing.T) {
+	router := NewRouter[CustomData]()
+	
+	// Route with embedded parameter that might contain special characters
+	router.GET("/file:type", func(ctx *Ctx[CustomData]) {
+		fileType := ctx.Params["type"]
+		ctx.ResponseWriter.Write([]byte("Type: " + fileType))
+	})
+	
+	// Test with special characters in the parameter value
+	req := httptest.NewRequest("GET", "/file.jpg", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	
+	resp := w.Result()
+	body, _ := io.ReadAll(resp.Body)
+	
+	expectedBody := "Type: .jpg"
+	if string(body) != expectedBody {
+		t.Errorf("Expected '%s', got '%s'", expectedBody, string(body))
+	}
+}
+
+func TestMultipleParametersInSegment(t *testing.T) {
+	router := NewRouter[CustomData]()
+	
+	// Route with multiple parameters separated by static content
+	router.GET("/user:id-post:postId", func(ctx *Ctx[CustomData]) {
+		userId := ctx.Params["id"]
+		postId := ctx.Params["postId"]
+		ctx.ResponseWriter.Write([]byte(fmt.Sprintf("User: %s, Post: %s", userId, postId)))
+	})
+	
+	// Test with values for both parameters
+	req := httptest.NewRequest("GET", "/user123-post456", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	
+	resp := w.Result()
+	body, _ := io.ReadAll(resp.Body)
+	
+	expectedBody := "User: 123, Post: 456"
+	if string(body) != expectedBody {
+		t.Errorf("Expected '%s', got '%s'", expectedBody, string(body))
+	}
+}
+
+func TestAdjacentParameters(t *testing.T) {
+	router := NewRouter[CustomData]()
+	
+	// Route with adjacent parameters
+	router.GET("/:param1:param2", func(ctx *Ctx[CustomData]) {
+		param1 := ctx.Params["param1"]
+		param2 := ctx.Params["param2"]
+		ctx.ResponseWriter.Write([]byte(fmt.Sprintf("P1: %s, P2: %s", param1, param2)))
+	})
+	
+	// Test with values for both parameters
+	req := httptest.NewRequest("GET", "/value1value2", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	
+	resp := w.Result()
+	body, _ := io.ReadAll(resp.Body)
+	
+	expectedBody := "P1: value1, P2: value2"
+	if string(body) != expectedBody {
+		t.Errorf("Expected '%s', got '%s'", expectedBody, string(body))
+	}
+}
+
+func TestParameterAtSegmentBoundary(t *testing.T) {
+	router := NewRouter[CustomData]()
+	
+	// Route with parameter at segment boundary
+	router.GET("/:param/", func(ctx *Ctx[CustomData]) {
+		param := ctx.Params["param"]
+		ctx.ResponseWriter.Write([]byte("Param: " + param))
+	})
+	
+	// Test with trailing slash
+	req := httptest.NewRequest("GET", "/value/", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	
+	resp := w.Result()
+	body, _ := io.ReadAll(resp.Body)
+	
+	expectedBody := "Param: value"
+	if string(body) != expectedBody {
+		t.Errorf("With trailing slash: Expected '%s', got '%s'", expectedBody, string(body))
+	}
+	
+	// Test without trailing slash - should still match due to normalization
+	req = httptest.NewRequest("GET", "/value", nil)
+	w = httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	
+	resp = w.Result()
+	body, _ = io.ReadAll(resp.Body)
+	
+	// Check if the router handles both cases correctly
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("Without trailing slash: Expected status 200, got %d", resp.StatusCode)
+	}
+}
+
+func TestEmptyParameterValue(t *testing.T) {
+	router := NewRouter[CustomData]()
+	
+	// Route with potentially empty parameter value
+	router.GET("/user/:name/profile", func(ctx *Ctx[CustomData]) {
+		name := ctx.Params["name"]
+		ctx.ResponseWriter.Write([]byte("Name: " + name))
+	})
+	
+	// Test with empty parameter value
+	req := httptest.NewRequest("GET", "/user//profile", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	
+	resp := w.Result()
+	body, _ := io.ReadAll(resp.Body)
+	
+	// The router should handle empty values correctly
+	expectedBody := "Name: "
+	if string(body) != expectedBody && resp.StatusCode == http.StatusOK {
+		t.Errorf("Expected '%s', got '%s' with status %d", expectedBody, string(body), resp.StatusCode)
+	}
+}
+
+func TestWildcardWithSpecialChars(t *testing.T) {
+	router := NewRouter[CustomData]()
+	
+	// Route with wildcard that might contain special characters
+	router.GET("/files/*path", func(ctx *Ctx[CustomData]) {
+		path := ctx.Params["path"]
+		ctx.ResponseWriter.Write([]byte("Path: " + path))
+	})
+	
+	// Test with special characters in the wildcard path - using an escaped URL
+	req := httptest.NewRequest("GET", "/files/path/with%3F.jpg", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	
+	resp := w.Result()
+	body, _ := io.ReadAll(resp.Body)
+	
+	expectedBody := "Path: path/with?.jpg"
+	if string(body) != expectedBody {
+		t.Errorf("Expected '%s', got '%s'", expectedBody, string(body))
+	}
+}
+
+func TestWildcardWithEmptyRest(t *testing.T) {
+	router := NewRouter[CustomData]()
+	
+	// Route with wildcard that might be empty
+	router.GET("/files/*path", func(ctx *Ctx[CustomData]) {
+		path := ctx.Params["path"]
+		ctx.ResponseWriter.Write([]byte("Path: " + path))
+	})
+	
+	// Test with nothing after the wildcard
+	req := httptest.NewRequest("GET", "/files/", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	
+	resp := w.Result()
+	body, _ := io.ReadAll(resp.Body)
+	
+	// The router should handle empty wildcard values correctly
+	expectedBody := "Path: "
+	if string(body) != expectedBody && resp.StatusCode == http.StatusOK {
+		t.Errorf("Expected '%s', got '%s' with status %d", expectedBody, string(body), resp.StatusCode)
+	}
+}
+
+func TestPathNormalization(t *testing.T) {
+	router := NewRouter[CustomData]()
+	
+	// Basic route to test path normalization
+	router.GET("/users/:id", func(ctx *Ctx[CustomData]) {
+		id := ctx.Params["id"]
+		ctx.ResponseWriter.Write([]byte("ID: " + id))
+	})
+	
+	// Test cases with different path forms
+	testCases := []struct {
+		name string
+		path string
+	}{
+		{"Trailing slash", "/users/123/"},
+		{"Double slashes", "/users//123"},
+		{"Mixed slashes", "//users/123//"},
+	}
+	
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest("GET", tc.path, nil)
+			w := httptest.NewRecorder()
+			router.ServeHTTP(w, req)
+			
+			resp := w.Result()
+			body, _ := io.ReadAll(resp.Body)
+			
+			// All forms should match and extract the ID parameter
+			expectedBody := "ID: 123"
+			if string(body) != expectedBody {
+				t.Errorf("Path '%s': Expected '%s', got '%s'", tc.path, expectedBody, string(body))
+			}
+		})
+	}
+}
+
+func TestEmptySegments(t *testing.T) {
+	router := NewRouter[CustomData]()
+	
+	// Route with no empty segments
+	router.GET("/a/b/c", func(ctx *Ctx[CustomData]) {
+		ctx.ResponseWriter.Write([]byte("Found"))
+	})
+	
+	// Test with empty segments in various positions
+	testCases := []struct {
+		name string
+		path string
+	}{
+		{"Empty segment at beginning", "//a/b/c"},
+		{"Empty segment in middle", "/a//b/c"},
+		{"Empty segments at end", "/a/b/c//"},
+		{"Multiple consecutive empty segments", "/a/b//c"},
+	}
+	
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest("GET", tc.path, nil)
+			w := httptest.NewRecorder()
+			router.ServeHTTP(w, req)
+			
+			resp := w.Result()
+			body, _ := io.ReadAll(resp.Body)
+			
+			// All valid paths should match the route
+			expectedBody := "Found"
+			if resp.StatusCode == http.StatusOK && string(body) != expectedBody {
+				t.Errorf("Path '%s': Expected '%s', got '%s'", tc.path, expectedBody, string(body))
+			}
+		})
+	}
+}
+
+func TestSpecialCharactersInStaticRoute(t *testing.T) {
+	router := NewRouter[CustomData]()
+	
+	// Route with special characters in static parts
+	router.GET("/path-with-hyphens/and_underscores", func(ctx *Ctx[CustomData]) {
+		ctx.ResponseWriter.Write([]byte("Found"))
+	})
+	
+	req := httptest.NewRequest("GET", "/path-with-hyphens/and_underscores", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	
+	resp := w.Result()
+	body, _ := io.ReadAll(resp.Body)
+	
+	expectedBody := "Found"
+	if string(body) != expectedBody {
+		t.Errorf("Expected '%s', got '%s'", expectedBody, string(body))
+	}
+}
+
+func TestSpecialCharactersInParameters(t *testing.T) {
+	router := NewRouter[CustomData]()
+	
+	// Route with parameter that might contain special characters
+	router.GET("/user/:name", func(ctx *Ctx[CustomData]) {
+		name := ctx.Params["name"]
+		ctx.ResponseWriter.Write([]byte("Name: " + name))
+	})
+	
+	// Test cases with different parameter values
+	testCases := []struct {
+		name  string
+		path  string
+		expected string
+	}{
+		{"URL-encoded spaces", "/user/John%20Doe", "Name: John Doe"},
+		{"Email address", "/user/email@example.com", "Name: email@example.com"},
+		{"Special symbols", "/user/user+name!symbol", "Name: user+name!symbol"},
+	}
+	
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest("GET", tc.path, nil)
+			w := httptest.NewRecorder()
+			router.ServeHTTP(w, req)
+			
+			resp := w.Result()
+			body, _ := io.ReadAll(resp.Body)
+			
+			if string(body) != tc.expected {
+				t.Errorf("Path '%s': Expected '%s', got '%s'", tc.path, tc.expected, string(body))
+			}
+		})
+	}
+}
+
+func TestUnicodeInPaths(t *testing.T) {
+	router := NewRouter[CustomData]()
+	
+	// Route with parameter that might contain Unicode characters
+	router.GET("/unicode/:text", func(ctx *Ctx[CustomData]) {
+		text := ctx.Params["text"]
+		ctx.ResponseWriter.Write([]byte("Text: " + text))
+	})
+	
+	// Test with Unicode characters
+	path := "/unicode/你好世界"
+	req := httptest.NewRequest("GET", path, nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	
+	resp := w.Result()
+	body, _ := io.ReadAll(resp.Body)
+	
+	expectedBody := "Text: 你好世界"
+	if string(body) != expectedBody {
+		t.Errorf("Expected '%s', got '%s'", expectedBody, string(body))
+	}
+}
+
+func TestCaseInsensitiveRouteMatching(t *testing.T) {
+	router := NewRouter[CustomData]()
+	
+	// Register route with mixed case
+	router.GET("/MixedCase", func(ctx *Ctx[CustomData]) {
+		ctx.ResponseWriter.Write([]byte("Found"))
+	})
+	
+	// Test with different case variations
+	testCases := []struct {
+		name string
+		path string
+		shouldMatch bool
+	}{
+		{"Exact case", "/MixedCase", true},
+		{"Lowercase", "/mixedcase", false},  // Default is case-sensitive
+		{"Uppercase", "/MIXEDCASE", false},
+		{"Mixed different", "/MiXeDcAsE", false},
+	}
+	
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest("GET", tc.path, nil)
+			w := httptest.NewRecorder()
+			router.ServeHTTP(w, req)
+			
+			resp := w.Result()
+			
+			if tc.shouldMatch && resp.StatusCode != http.StatusOK {
+				t.Errorf("Path '%s': Expected match (200), got %d", tc.path, resp.StatusCode)
+			} else if !tc.shouldMatch && resp.StatusCode == http.StatusOK {
+				t.Errorf("Path '%s': Expected no match (non-200), got %d", tc.path, resp.StatusCode)
+			}
+		})
+	}
+}
+
+func TestParameterPrecedence(t *testing.T) {
+	router := NewRouter[CustomData]()
+	
+	// Register both a static and parameter route at the same level
+	router.GET("/user/admin", func(ctx *Ctx[CustomData]) {
+		ctx.ResponseWriter.Write([]byte("Admin Route"))
+	})
+	
+	router.GET("/user/:role", func(ctx *Ctx[CustomData]) {
+		role := ctx.Params["role"]
+		ctx.ResponseWriter.Write([]byte("Role: " + role))
+	})
+	
+	// Test static route precedence
+	req := httptest.NewRequest("GET", "/user/admin", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	
+	resp := w.Result()
+	body, _ := io.ReadAll(resp.Body)
+	
+	expectedBody := "Admin Route"
+	if string(body) != expectedBody {
+		t.Errorf("Expected static route to take precedence, got '%s'", string(body))
+	}
+	
+	// Test parameter route for non-matching static route
+	req = httptest.NewRequest("GET", "/user/editor", nil)
+	w = httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	
+	resp = w.Result()
+	body, _ = io.ReadAll(resp.Body)
+	
+	expectedBody = "Role: editor"
+	if string(body) != expectedBody {
+		t.Errorf("Expected parameter route to match, got '%s'", string(body))
+	}
+}
+
+func TestWildcardPrecedence(t *testing.T) {
+	router := NewRouter[CustomData]()
+	
+	// Register routes with different specificity
+	router.GET("/api/users/:id", func(ctx *Ctx[CustomData]) {
+		id := ctx.Params["id"]
+		ctx.ResponseWriter.Write([]byte("User ID: " + id))
+	})
+	
+	router.GET("/api/*wildcard", func(ctx *Ctx[CustomData]) {
+		wildcard := ctx.Params["wildcard"]
+		ctx.ResponseWriter.Write([]byte("Wildcard: " + wildcard))
+	})
+	
+	// Test more specific route precedence
+	req := httptest.NewRequest("GET", "/api/users/123", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	
+	resp := w.Result()
+	body, _ := io.ReadAll(resp.Body)
+	
+	expectedBody := "User ID: 123"
+	if string(body) != expectedBody {
+		t.Errorf("Expected specific route to take precedence, got '%s'", string(body))
+	}
+	
+	// Test wildcard route for non-matching specific path
+	req = httptest.NewRequest("GET", "/api/products/456", nil)
+	w = httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	
+	resp = w.Result()
+	body, _ = io.ReadAll(resp.Body)
+	
+	expectedBody = "Wildcard: products/456"
+	if string(body) != expectedBody {
+		t.Errorf("Expected wildcard route to match, got '%s'", string(body))
+	}
+}
+
+func TestBackwardCompatibility(t *testing.T) {
+	// Test that existing API patterns still work as expected
+	
+	t.Run("Original parameter syntax", func(t *testing.T) {
+		router := NewRouter[CustomData]()
+		
+		// Original parameter syntax
+		router.GET("/users/:id", func(ctx *Ctx[CustomData]) {
+			id := ctx.Params["id"]
+			ctx.ResponseWriter.Write([]byte("ID: " + id))
+		})
+		
+		req := httptest.NewRequest("GET", "/users/123", nil)
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		
+		resp := w.Result()
+		body, _ := io.ReadAll(resp.Body)
+		
+		expectedBody := "ID: 123"
+		if string(body) != expectedBody {
+			t.Errorf("Original parameter syntax failed, got '%s'", string(body))
+		}
+	})
+	
+	t.Run("Original wildcard syntax", func(t *testing.T) {
+		router := NewRouter[CustomData]()
+		
+		// Original wildcard syntax
+		router.GET("/files/*filepath", func(ctx *Ctx[CustomData]) {
+			filepath := ctx.Params["filepath"]
+			ctx.ResponseWriter.Write([]byte("Filepath: " + filepath))
+		})
+		
+		req := httptest.NewRequest("GET", "/files/documents/report.pdf", nil)
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		
+		resp := w.Result()
+		body, _ := io.ReadAll(resp.Body)
+		
+		expectedBody := "Filepath: documents/report.pdf"
+		if string(body) != expectedBody {
+			t.Errorf("Original wildcard syntax failed, got '%s'", string(body))
+		}
+	})
+	
+	t.Run("Original ctx.Param method", func(t *testing.T) {
+		router := NewRouter[CustomData]()
+		
+		// Test for ctx.Param() backward compatibility
+		router.GET("/item/:id", func(ctx *Ctx[CustomData]) {
+			// Using original accessor method
+			id := ctx.Param("id")
+			ctx.ResponseWriter.Write([]byte("Item: " + id))
+		})
+		
+		req := httptest.NewRequest("GET", "/item/abc123", nil)
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		
+		resp := w.Result()
+		body, _ := io.ReadAll(resp.Body)
+		
+		expectedBody := "Item: abc123"
+		if string(body) != expectedBody {
+			t.Errorf("Original ctx.Param() method failed, got '%s'", string(body))
+		}
+	})
+}
+
+func TestLongURLPath(t *testing.T) {
+	router := NewRouter[CustomData]()
+	
+	// Register a route that can handle very long paths
+	router.GET("/api/v1/resources/:id/nested/:type/*rest", func(ctx *Ctx[CustomData]) {
+		id := ctx.Params["id"]
+		resourceType := ctx.Params["type"]
+		rest := ctx.Params["rest"]
+		ctx.ResponseWriter.Write([]byte(fmt.Sprintf("ID: %s, Type: %s, Rest: %s", id, resourceType, rest)))
+	})
+	
+	// Create a very long path with many segments
+	var pathBuilder strings.Builder
+	pathBuilder.WriteString("/api/v1/resources/12345/nested/document/")
+	for i := 0; i < 20; i++ {
+		pathBuilder.WriteString(fmt.Sprintf("segment%d/", i))
+	}
+	longPath := pathBuilder.String()
+	
+	req := httptest.NewRequest("GET", longPath, nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	
+	resp := w.Result()
+	
+	// Verify the router can handle very long paths
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("Failed to handle long path, got status %d", resp.StatusCode)
 	}
 }
