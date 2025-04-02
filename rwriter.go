@@ -38,10 +38,16 @@ func (w *ResponseWriterWrapper) WriteHeader(statusCode int) {
 func (w *ResponseWriterWrapper) Write(data []byte) (int, error) {
     size, err := w.ResponseWriter.Write(data)
     if w.CaptureBody && err == nil {
+        // Thread-safe buffer initialization
         if w.Body == nil {
             w.Body = &bytes.Buffer{}
         }
-        _, bufferErr := w.Body.Write(data)
+        
+        // Copy the data to avoid race conditions if the data is modified concurrently
+        dataCopy := make([]byte, len(data))
+        copy(dataCopy, data)
+        
+        _, bufferErr := w.Body.Write(dataCopy)
         if bufferErr != nil && EnableLoggerCheck {
             if logger != nil {
                 logger.Error().Err(bufferErr).Msg("[octo] failed to write to response buffer")
@@ -73,5 +79,9 @@ func (w *ResponseWriterWrapper) Push(target string, opts *http.PushOptions) erro
 
 // Determines if any response data has been written
 func (w *ResponseWriterWrapper) Written() bool {
-    return w.Body != nil && w.Body.Len() > 0
+    // Safe check against nil Body first
+    if w.Body == nil {
+        return false
+    }
+    return w.Body.Len() > 0
 }

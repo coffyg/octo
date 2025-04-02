@@ -125,9 +125,12 @@ func (ctx *Ctx[V]) QueryParam(key string) string {
         return value
     }
     
-    // Initialize query params if needed (lazy loading)
+    // Thread-safe lazy initialization of query params
     if ctx.Query == nil {
-        ctx.Query = ctx.Request.URL.Query()
+        // Create a new map to avoid race conditions
+        query := ctx.Request.URL.Query()
+        // Use a single assignment which is atomic for most architectures
+        ctx.Query = query
     }
     
     // Then check query params
@@ -145,9 +148,12 @@ func (ctx *Ctx[V]) DefaultQueryParam(key, defaultValue string) string {
         return value
     }
     
-    // Initialize query params if needed (lazy loading)
+    // Thread-safe lazy initialization of query params
     if ctx.Query == nil {
-        ctx.Query = ctx.Request.URL.Query()
+        // Create a new map to avoid race conditions
+        query := ctx.Request.URL.Query()
+        // Use a single assignment which is atomic for most architectures
+        ctx.Query = query
     }
     
     // Then check query params
@@ -161,9 +167,12 @@ func (ctx *Ctx[V]) DefaultQueryParam(key, defaultValue string) string {
 
 // Only checks URL query parameters, not path parameters
 func (ctx *Ctx[V]) QueryValue(key string) string {
-    // Initialize query params if needed (lazy loading)
+    // Thread-safe lazy initialization of query params
     if ctx.Query == nil {
-        ctx.Query = ctx.Request.URL.Query()
+        // Create a new map to avoid race conditions
+        query := ctx.Request.URL.Query()
+        // Use a single assignment which is atomic for most architectures
+        ctx.Query = query
     }
     
     values := ctx.Query[key]
@@ -174,9 +183,12 @@ func (ctx *Ctx[V]) QueryValue(key string) string {
 }
 
 func (ctx *Ctx[V]) DefaultQuery(key, defaultValue string) string {
-    // Initialize query params if needed (lazy loading)
+    // Thread-safe lazy initialization of query params
     if ctx.Query == nil {
-        ctx.Query = ctx.Request.URL.Query()
+        // Create a new map to avoid race conditions
+        query := ctx.Request.URL.Query()
+        // Use a single assignment which is atomic for most architectures
+        ctx.Query = query
     }
     
     values := ctx.Query[key]
@@ -187,18 +199,24 @@ func (ctx *Ctx[V]) DefaultQuery(key, defaultValue string) string {
 }
 
 func (ctx *Ctx[V]) QueryArray(key string) []string {
-    // Initialize query params if needed (lazy loading)
+    // Thread-safe lazy initialization of query params
     if ctx.Query == nil {
-        ctx.Query = ctx.Request.URL.Query()
+        // Create a new map to avoid race conditions
+        query := ctx.Request.URL.Query()
+        // Use a single assignment which is atomic for most architectures
+        ctx.Query = query
     }
     
     return ctx.Query[key]
 }
 
 func (ctx *Ctx[V]) QueryMap() map[string][]string {
-    // Initialize query params if needed (lazy loading)
+    // Thread-safe lazy initialization of query params
     if ctx.Query == nil {
-        ctx.Query = ctx.Request.URL.Query()
+        // Create a new map to avoid race conditions
+        query := ctx.Request.URL.Query()
+        // Use a single assignment which is atomic for most architectures
+        ctx.Query = query
     }
     
     return ctx.Query

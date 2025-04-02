@@ -266,3 +266,147 @@ func TestRequestBody(t *testing.T) {
 		t.Errorf("Expected 'request body', got '%s'", string(body))
 	}
 }
+
+func TestQueryMethods(t *testing.T) {
+	router := NewRouter[CustomData]()
+
+	// Set up a route that tests all query methods
+	router.GET("/query-test", func(ctx *Ctx[CustomData]) {
+		result := make(map[string]interface{})
+
+		// Test QueryParam
+		result["queryParam"] = ctx.QueryParam("name")
+		
+		// Test DefaultQueryParam
+		result["defaultQueryParam"] = ctx.DefaultQueryParam("missing", "default-value")
+		
+		// Test QueryValue (similar to QueryParam but only checks query string)
+		result["queryValue"] = ctx.QueryValue("age")
+		
+		// Test DefaultQuery
+		result["defaultQuery"] = ctx.DefaultQuery("occupation", "developer")
+		
+		// Test QueryArray
+		result["queryArray"] = ctx.QueryArray("hobbies")
+		
+		// Test QueryMap
+		queryMap := ctx.QueryMap()
+		result["queryMapSize"] = len(queryMap)
+		result["hasNameInMap"] = len(queryMap["name"]) > 0
+
+		// Make sure lazy loading is working
+		if ctx.Query == nil {
+			result["queryInitialized"] = false
+		} else {
+			result["queryInitialized"] = true
+		}
+
+		jsonResponse, _ := json.Marshal(result)
+		ctx.ResponseWriter.Header().Set("Content-Type", "application/json")
+		ctx.ResponseWriter.Write(jsonResponse)
+	})
+
+	// Test with multiple query parameters
+	// URL: /query-test?name=john&age=30&hobbies=coding&hobbies=gaming
+	req := httptest.NewRequest("GET", "/query-test?name=john&age=30&hobbies=coding&hobbies=gaming", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	resp := w.Result()
+	body, _ := io.ReadAll(resp.Body)
+
+	var result map[string]interface{}
+	if err := json.Unmarshal(body, &result); err != nil {
+		t.Fatalf("Failed to unmarshal response: %v", err)
+	}
+
+	// Verify results
+	tests := []struct {
+		name     string
+		got      interface{}
+		expected interface{}
+	}{
+		{"queryParam", result["queryParam"], "john"},
+		{"defaultQueryParam", result["defaultQueryParam"], "default-value"},
+		{"queryValue", result["queryValue"], "30"},
+		{"defaultQuery", result["defaultQuery"], "developer"},
+		{"queryMapSize", result["queryMapSize"], float64(3)}, // JSON unmarshals numbers as float64
+		{"hasNameInMap", result["hasNameInMap"], true},
+		{"queryInitialized", result["queryInitialized"], true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if !reflect.DeepEqual(tt.got, tt.expected) {
+				t.Errorf("%s = %v, expected %v", tt.name, tt.got, tt.expected)
+			}
+		})
+	}
+
+	// Check QueryArray result separately since it's a slice
+	hobbiesResult, ok := result["queryArray"].([]interface{})
+	if !ok {
+		t.Errorf("queryArray is not a slice, got: %T", result["queryArray"])
+	} else {
+		expected := []string{"coding", "gaming"}
+		if len(hobbiesResult) != len(expected) {
+			t.Errorf("queryArray length = %d, expected %d", len(hobbiesResult), len(expected))
+		} else {
+			for i, v := range expected {
+				if hobbiesResult[i] != v {
+					t.Errorf("queryArray[%d] = %v, expected %v", i, hobbiesResult[i], v)
+				}
+			}
+		}
+	}
+
+	// Test with no query parameters to verify default behavior
+	req = httptest.NewRequest("GET", "/query-test", nil)
+	w = httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	resp = w.Result()
+	body, _ = io.ReadAll(resp.Body)
+
+	if err := json.Unmarshal(body, &result); err != nil {
+		t.Fatalf("Failed to unmarshal empty response: %v", err)
+	}
+
+	// Verify empty results
+	emptyTests := []struct {
+		name     string
+		got      interface{}
+		expected interface{}
+	}{
+		{"queryParam", result["queryParam"], ""},
+		{"defaultQueryParam", result["defaultQueryParam"], "default-value"},
+		{"queryValue", result["queryValue"], ""},
+		{"defaultQuery", result["defaultQuery"], "developer"},
+		{"queryMapSize", result["queryMapSize"], float64(0)},
+		{"hasNameInMap", result["hasNameInMap"], false},
+		{"queryInitialized", result["queryInitialized"], true},
+	}
+
+	for _, tt := range emptyTests {
+		t.Run("Empty_"+tt.name, func(t *testing.T) {
+			if !reflect.DeepEqual(tt.got, tt.expected) {
+				t.Errorf("%s = %v, expected %v", tt.name, tt.got, tt.expected)
+			}
+		})
+	}
+
+	// Check empty QueryArray result
+	// When empty, QueryArray returns an empty slice, but JSON marshaling
+	// may convert it to null depending on the implementation
+	emptyArray, ok := result["queryArray"]
+	if emptyArray != nil {
+		// If not nil, it should be an empty array
+		emptyHobbiesResult, ok := emptyArray.([]interface{})
+		if !ok {
+			t.Errorf("queryArray should be empty array, got: %T: %v", 
+				result["queryArray"], result["queryArray"])
+		} else if len(emptyHobbiesResult) != 0 {
+			t.Errorf("Empty queryArray length = %d, expected 0", len(emptyHobbiesResult))
+		}
+	}
+}

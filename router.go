@@ -431,13 +431,15 @@ func (r *Router[V]) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	startTime := time.Now().UnixNano()
 	requestID := uuid.NewString()
 	
+	// Pre-initialize Query to avoid race conditions in concurrent middleware
+query := req.URL.Query()
 	ctx := &Ctx[V]{
 		ResponseWriter: responseWriter,
 		Request:        req,
 		Params:         params,
 		StartTime:      startTime,
 		UUID:           requestID,
-		Query:          req.URL.Query(), // Parse now to maintain compatibility with tests
+		Query:          query, // Parse upfront to avoid race conditions
 	}
 
 	// Apply middleware chain and execute
