@@ -6,6 +6,7 @@ import (
 	"os"
 	"runtime/debug"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -29,18 +30,38 @@ type node[V any] struct {
 	handlers       map[string]*routeEntry[V]
 	middleware     []MiddlewareFunc[V]
 	parent         *node[V]
+	// Optimization: compressed path for common static prefixes
+	compressedPath string
 }
 
 type Router[V any] struct {
 	root               *node[V]
 	middleware         []MiddlewareFunc[V]
 	preGroupMiddleware []MiddlewareFunc[V]
+	ctxPool            sync.Pool
+	headerPool         sync.Pool
 }
 
 func NewRouter[V any]() *Router[V] {
-	return &Router[V]{
-		root: &node[V]{},
+	r := &Router[V]{
+		root: &node[V]{
+			staticChildren: make(map[string]*node[V], 8), // Pre-allocate common size
+		},
 	}
+	r.ctxPool = sync.Pool{
+		New: func() interface{} {
+			return &Ctx[V]{
+				Params: make(map[string]string, 4), // Pre-allocate for common case
+			}
+		},
+	}
+	r.headerPool = sync.Pool{
+		New: func() interface{} {
+			// Pre-allocate header map with common size
+			return make(http.Header, 16)
+		},
+	}
+	return r
 }
 
 // UseGlobal adds middleware that applies to all routes before group middleware
@@ -351,21 +372,72 @@ func (r *Router[V]) globalMiddlewareChain() []MiddlewareFunc[V] {
 	return chain
 }
 
+// pathSegment represents a segment of the path without allocation
+type pathSegment struct {
+	start int
+	end   int
+}
+
+// splitPathZeroAlloc splits a path into segments without allocating strings
+// Returns the segments as start/end indices in the original path
+func splitPathZeroAlloc(path string) []pathSegment {
+	if len(path) == 0 || path == "/" {
+		return nil
+	}
+
+	// Remove leading slash
+	start := 0
+	if path[0] == '/' {
+		start = 1
+	}
+
+	// Fast path for single segment
+	if len(path) < 3 || !strings.Contains(path[start:], "/") {
+		if start < len(path) {
+			return []pathSegment{{start: start, end: len(path)}}
+		}
+		return nil
+	}
+
+	// Pre-count segments for exact allocation
+	segmentCount := 1
+	for i := start; i < len(path); i++ {
+		if path[i] == '/' {
+			segmentCount++
+		}
+	}
+
+	// Pre-allocate slice with exact capacity
+	segments := make([]pathSegment, 0, segmentCount)
+
+	// Split the path using indices
+	segStart := start
+	for i := start; i <= len(path); i++ {
+		if i == len(path) || path[i] == '/' {
+			if segStart < i {
+				segments = append(segments, pathSegment{start: segStart, end: i})
+			}
+			segStart = i + 1
+		}
+	}
+	return segments
+}
+
 func splitPath(path string) []string {
 	if path == "" || path == "/" {
 		return nil
 	}
-	
+
 	// Remove leading slash
 	if path[0] == '/' {
 		path = path[1:]
 	}
-	
+
 	// For short paths, avoid unnecessary allocations
 	if len(path) < 3 && !strings.Contains(path, "/") {
 		return []string{path}
 	}
-	
+
 	// Pre-count segments for better slice allocation
 	segmentCount := 1
 	for i := 0; i < len(path); i++ {
@@ -373,10 +445,10 @@ func splitPath(path string) []string {
 			segmentCount++
 		}
 	}
-	
+
 	// Pre-allocate slice with exact capacity
 	parts := make([]string, 0, segmentCount)
-	
+
 	// Split the path
 	start := 0
 	for i := 0; i <= len(path); i++ {
@@ -405,8 +477,8 @@ func (r *Router[V]) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	}
 
 	// Find matching route
-	handler, middlewareChain, params, ok := r.search(method, path)
-	
+	handler, middlewareChain, params, ok := r.searchOptimized(method, path)
+
 	// Handle not found case
 	if !ok {
 		handler = func(ctx *Ctx[V]) {
@@ -426,25 +498,56 @@ func (r *Router[V]) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	// Wrap the response writer
 	responseWriter := NewResponseWriterWrapper(w)
 
-	// Create the context
-	// Pre-compute start time and UUID only once
-	startTime := time.Now().UnixNano()
-	requestID := uuid.NewString()
+	// Get context from pool
+	ctx := r.ctxPool.Get().(*Ctx[V])
 	
-	// Pre-initialize Query to avoid race conditions in concurrent middleware
-query := req.URL.Query()
-	ctx := &Ctx[V]{
-		ResponseWriter: responseWriter,
-		Request:        req,
-		Params:         params,
-		StartTime:      startTime,
-		UUID:           requestID,
-		Query:          query, // Parse upfront to avoid race conditions
+	// Reset and initialize context
+	ctx.ResponseWriter = responseWriter
+	ctx.Request = req
+	ctx.StartTime = time.Now().UnixNano()
+	ctx.UUID = uuid.NewString()
+	ctx.Query = req.URL.Query() // Parse upfront to maintain backward compatibility
+	ctx.done = false
+	ctx.hasReadBody = false
+	ctx.Body = nil
+	ctx.Headers = nil
+	
+	// Handle parameters
+	if params != nil {
+		// Reuse existing map if possible
+		if ctx.Params == nil {
+			ctx.Params = params
+		} else {
+			// Clear and copy
+			for k := range ctx.Params {
+				delete(ctx.Params, k)
+			}
+			for k, v := range params {
+				ctx.Params[k] = v
+			}
+		}
+	} else {
+		// Clear params if no new params
+		for k := range ctx.Params {
+			delete(ctx.Params, k)
+		}
 	}
 
 	// Apply middleware chain and execute
 	handler = applyMiddleware(handler, middlewareChain)
 	handler(ctx)
+	
+	// Return context to pool
+	// Clear sensitive data before returning to pool
+	ctx.ResponseWriter = nil
+	ctx.Request = nil
+	ctx.Query = nil
+	ctx.Body = nil
+	ctx.Headers = nil
+	// Keep Params allocated for reuse
+	var zero V
+	ctx.Custom = zero
+	r.ctxPool.Put(ctx)
 }
 
 func (r *Router[V]) search(method, path string) (HandlerFunc[V], []MiddlewareFunc[V], map[string]string, bool) {
@@ -495,7 +598,7 @@ func (r *Router[V]) search(method, path string) (HandlerFunc[V], []MiddlewareFun
 					if remaining != "" {
 						cur = child
 						part = remaining
-						
+
 						// Handle nested parameter patterns
 						for {
 							if cur.paramChild != nil {
@@ -504,11 +607,11 @@ func (r *Router[V]) search(method, path string) (HandlerFunc[V], []MiddlewareFun
 								matched = true
 								break
 							}
-							
+
 							if cur.staticChildren == nil {
 								break
 							}
-							
+
 							// Check for static prefix matches
 							found := false
 							for k, c := range cur.staticChildren {
@@ -519,12 +622,12 @@ func (r *Router[V]) search(method, path string) (HandlerFunc[V], []MiddlewareFun
 									break
 								}
 							}
-							
+
 							if !found {
 								break
 							}
 						}
-						
+
 						if matched {
 							break
 						}
@@ -532,7 +635,7 @@ func (r *Router[V]) search(method, path string) (HandlerFunc[V], []MiddlewareFun
 				}
 			}
 		}
-		
+
 		if matched {
 			continue
 		}
@@ -561,7 +664,7 @@ func (r *Router[V]) search(method, path string) (HandlerFunc[V], []MiddlewareFun
 	if !cur.isLeaf {
 		return nil, nil, nil, false
 	}
-	
+
 	handlerEntry, ok := cur.handlers[method]
 	if !ok {
 		return nil, nil, nil, false
@@ -581,8 +684,197 @@ func (r *Router[V]) search(method, path string) (HandlerFunc[V], []MiddlewareFun
 			}
 		}
 	}
-	
+
 	return handlerEntry.handler, handlerEntry.middleware, params, true
+}
+
+// searchOptimized performs zero-allocation path matching
+func (r *Router[V]) searchOptimized(method, path string) (HandlerFunc[V], []MiddlewareFunc[V], map[string]string, bool) {
+	// Fast path for root or empty path
+	if path == "" || path == "/" {
+		if r.root.isLeaf {
+			if handlerEntry, ok := r.root.handlers[method]; ok {
+				return handlerEntry.handler, handlerEntry.middleware, nil, true
+			}
+		}
+		return nil, nil, nil, false
+	}
+
+	// Fast path for common static routes (no parameters)
+	// Check if path contains parameter markers for early exit
+	if !strings.ContainsAny(path, ":*") {
+		// Try direct static lookup first
+		if handler, middleware, ok := r.tryStaticFastPath(method, path); ok {
+			return handler, middleware, nil, true
+		}
+	}
+
+	// Get path segments without allocation
+	segments := splitPathZeroAlloc(path)
+	if len(segments) == 0 {
+		// Handle paths like "///" by checking root handler
+		if r.root.isLeaf {
+			if handlerEntry, ok := r.root.handlers[method]; ok {
+				return handlerEntry.handler, handlerEntry.middleware, nil, true
+			}
+		}
+		return nil, nil, nil, false
+	}
+
+	cur := r.root
+	// Pre-allocate parameter values slice to avoid multiple allocations
+	paramValues := make([]pathSegment, 0, 8) // Most paths have fewer than 8 parameters
+
+	for _, segment := range segments {
+		if segment.start >= segment.end {
+			continue
+		}
+
+		// Try static child first (most common case)
+		if cur.staticChildren != nil {
+			// Extract segment string only when needed
+			segStr := path[segment.start:segment.end]
+			if child, ok := cur.staticChildren[segStr]; ok {
+				cur = child
+				continue
+			}
+
+			// Try embedded parameter matching
+			matched := false
+			for key, child := range cur.staticChildren {
+				if len(key) <= len(segStr) && segStr[:len(key)] == key {
+					remaining := segStr[len(key):]
+					if remaining != "" {
+						cur = child
+						// Create a new segment for the remaining part
+						remainingSegment := pathSegment{
+							start: segment.start + len(key),
+							end:   segment.end,
+						}
+
+						// Handle nested parameter patterns
+						for {
+							if cur.paramChild != nil {
+								paramValues = append(paramValues, remainingSegment)
+								cur = cur.paramChild
+								matched = true
+								break
+							}
+
+							if cur.staticChildren == nil {
+								break
+							}
+
+							// Check for static prefix matches
+							found := false
+							remainingStr := path[remainingSegment.start:remainingSegment.end]
+							for k, c := range cur.staticChildren {
+								if len(k) <= len(remainingStr) && remainingStr[:len(k)] == k {
+									cur = c
+									remainingSegment.start += len(k)
+									found = true
+									break
+								}
+							}
+
+							if !found {
+								break
+							}
+						}
+
+						if matched {
+							break
+						}
+					}
+				}
+			}
+
+			if matched {
+				continue
+			}
+		}
+
+		// Try parameter child
+		if cur.paramChild != nil {
+			paramValues = append(paramValues, segment)
+			cur = cur.paramChild
+			continue
+		}
+
+		// Try wildcard child (lowest priority)
+		if cur.wildcardChild != nil {
+			// Create segment for remaining path
+			wildcardSegment := pathSegment{
+				start: segment.start,
+				end:   len(path),
+			}
+			paramValues = append(paramValues, wildcardSegment)
+			cur = cur.wildcardChild
+			break
+		}
+
+		// No match found for this segment
+		return nil, nil, nil, false
+	}
+
+	// Check if we reached a leaf node with a handler for this method
+	if !cur.isLeaf {
+		return nil, nil, nil, false
+	}
+
+	handlerEntry, ok := cur.handlers[method]
+	if !ok {
+		return nil, nil, nil, false
+	}
+
+	// Create parameter map only when needed
+	var params map[string]string
+	if len(handlerEntry.paramNames) > 0 && len(paramValues) > 0 {
+		params = make(map[string]string, len(handlerEntry.paramNames))
+		for i, paramName := range handlerEntry.paramNames {
+			if i < len(paramValues) {
+				// Extract parameter value from path using segment indices
+				segment := paramValues[i]
+				params[paramName] = path[segment.start:segment.end]
+			}
+		}
+	}
+
+	return handlerEntry.handler, handlerEntry.middleware, params, true
+}
+
+// tryStaticFastPath attempts a direct lookup for static routes
+func (r *Router[V]) tryStaticFastPath(method, path string) (HandlerFunc[V], []MiddlewareFunc[V], bool) {
+	segments := splitPath(path)
+	if len(segments) == 0 {
+		return nil, nil, false
+	}
+	
+	cur := r.root
+	for _, segment := range segments {
+		if segment == "" {
+			continue
+		}
+		if cur.staticChildren == nil {
+			return nil, nil, false
+		}
+		child, ok := cur.staticChildren[segment]
+		if !ok {
+			return nil, nil, false
+		}
+		cur = child
+	}
+	
+	if !cur.isLeaf {
+		return nil, nil, false
+	}
+	
+	handlerEntry, ok := cur.handlers[method]
+	if !ok {
+		return nil, nil, false
+	}
+	
+	return handlerEntry.handler, handlerEntry.middleware, true
 }
 
 // Optimized middleware application that preserves the original middleware execution order
@@ -590,7 +882,7 @@ func (r *Router[V]) search(method, path string) (HandlerFunc[V], []MiddlewareFun
 // 1. First middleware in the chain (middleware[0]) runs first
 // 2. Last middleware in the chain (middleware[len-1]) runs last
 // 3. The handler runs after all middleware
-// 
+//
 // Performance optimizations:
 // - Processing middleware in reverse order for proper nesting
 // - Single ctx.done check per function call
@@ -620,7 +912,7 @@ func applyMiddleware[V any](handler HandlerFunc[V], middleware []MiddlewareFunc[
 			mw(prev)(ctx)
 		}
 	}
-	
+
 	return result
 }
 
@@ -650,7 +942,7 @@ func RecoveryMiddleware[V any]() MiddlewareFunc[V] {
 					default:
 						wrappedErr = errors.Errorf("%v", r)
 					}
-					
+
 					// Handle client aborted requests differently (less severe)
 					if errors.Is(wrappedErr, http.ErrAbortHandler) {
 						// Skip logging if logger is disabled
@@ -663,7 +955,7 @@ func RecoveryMiddleware[V any]() MiddlewareFunc[V] {
 						}
 						return
 					}
-					
+
 					// For other panics, use our enhanced panic logging
 					// Only log if logger is enabled and available
 					if !EnableLoggerCheck || logger != nil {
@@ -676,7 +968,7 @@ func RecoveryMiddleware[V any]() MiddlewareFunc[V] {
 							ctx.Request.Method,
 							ctx.ClientIP())
 					}
-					
+
 					// Return an Internal Server Error response
 					// Check if we need to respond with JSON or plain text
 					contentType := ctx.ResponseWriter.Header().Get("Content-Type")
