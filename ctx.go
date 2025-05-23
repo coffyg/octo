@@ -14,6 +14,7 @@ import (
     "net/url"
     "strconv"
     "strings"
+    "sync"
     "time"
 
     // Third-party imports
@@ -26,6 +27,13 @@ import (
 
 // Global form decoder instance
 var formDecoder = form.NewDecoder()
+
+// Buffer pool for JSON encoding and other uses
+var bufferPool = sync.Pool{
+	New: func() interface{} {
+		return new(bytes.Buffer)
+	},
+}
 
 // HTTP request context with typed custom data field
 type Ctx[V any] struct {
@@ -43,6 +51,8 @@ type Ctx[V any] struct {
 }
 
 func (ctx *Ctx[V]) SetHeader(key, value string) {
+    // For common headers, we still use Set() to ensure proper canonicalization
+    // The optimization comes from using pre-defined string constants
     ctx.ResponseWriter.Header().Set(key, value)
 }
 
@@ -81,17 +91,36 @@ func (ctx *Ctx[V]) SendJSON(statusCode int, v interface{}) error {
         return fmt.Errorf("invalid HTTP status code: %d", statusCode)
     }
     
-    response, err := json.Marshal(v)
+    // Get buffer from pool
+    buf := bufferPool.Get().(*bytes.Buffer)
+    defer func() {
+        buf.Reset()
+        bufferPool.Put(buf)
+    }()
+    
+    // Create encoder with buffer
+    encoder := json.NewEncoder(buf)
+    encoder.SetEscapeHTML(false) // Avoid HTML escaping for performance
+    
+    // Encode to buffer
+    err := encoder.Encode(v)
     if err != nil {
         ctx.SendError("err_json_error", err)
         return err
     }
     
-    ctx.SetHeader("Content-Type", "application/json")
-    ctx.SetHeader("Content-Length", strconv.Itoa(len(response)))
+    // Remove trailing newline from encoder.Encode
+    data := buf.Bytes()
+    if len(data) > 0 && data[len(data)-1] == '\n' {
+        data = data[:len(data)-1]
+    }
+    
+    // Set headers
+    ctx.SetHeader(HeaderContentType, ContentTypeJSON)
+    ctx.SetHeader(HeaderContentLength, strconv.Itoa(len(data)))
     ctx.SetStatus(statusCode)
     
-    _, err = ctx.ResponseWriter.Write(response)
+    _, err = ctx.ResponseWriter.Write(data)
     if err != nil {
         // Simplify nested conditionals
         if EnableLoggerCheck && logger == nil {
@@ -246,30 +275,38 @@ func (ctx *Ctx[V]) ClientIP() string {
     }
     
     // Fast path - check X-Forwarded-For header first (most common in proxied environments)
-    if xForwardedFor := ctx.Request.Header.Get("X-Forwarded-For"); xForwardedFor != "" {
-        // Fast path for simple case - single IP without comma
-        if !strings.Contains(xForwardedFor, ",") {
-            ip := strings.TrimSpace(xForwardedFor)
-            if net.ParseIP(ip) != nil {
-                return ip
-            }
+    if xForwardedFor := ctx.Request.Header.Get(HeaderXForwardedFor); xForwardedFor != "" {
+        // Optimized: find first comma position instead of Contains+Split
+        commaPos := strings.IndexByte(xForwardedFor, ',')
+        
+        var firstIP string
+        if commaPos == -1 {
+            // No comma - single IP
+            firstIP = xForwardedFor
         } else {
-            // Multiple IPs - take first valid one
-            ips := strings.Split(xForwardedFor, ",")
-            if len(ips) > 0 {
-                ip := strings.TrimSpace(ips[0])
-                if net.ParseIP(ip) != nil {
-                    return ip
-                }
-            }
+            // Multiple IPs - take first one
+            firstIP = xForwardedFor[:commaPos]
+        }
+        
+        // Trim spaces only if needed
+        if len(firstIP) > 0 && (firstIP[0] == ' ' || firstIP[len(firstIP)-1] == ' ') {
+            firstIP = strings.TrimSpace(firstIP)
+        }
+        
+        // Validate IP
+        if net.ParseIP(firstIP) != nil {
+            return firstIP
         }
     }
     
     // Check X-Real-IP next
-    if xRealIP := ctx.Request.Header.Get("X-Real-IP"); xRealIP != "" {
-        ip := strings.TrimSpace(xRealIP)
-        if net.ParseIP(ip) != nil {
-            return ip
+    if xRealIP := ctx.Request.Header.Get(HeaderXRealIP); xRealIP != "" {
+        // Trim spaces only if needed
+        if len(xRealIP) > 0 && (xRealIP[0] == ' ' || xRealIP[len(xRealIP)-1] == ' ') {
+            xRealIP = strings.TrimSpace(xRealIP)
+        }
+        if net.ParseIP(xRealIP) != nil {
+            return xRealIP
         }
     }
     
@@ -279,13 +316,20 @@ func (ctx *Ctx[V]) ClientIP() string {
         return "0.0.0.0"
     }
     
-    // Most RemoteAddr values will have the port
-    ip, _, err := net.SplitHostPort(remoteAddr)
-    if err != nil {
-        // Handle edge case where RemoteAddr has no port
-        return remoteAddr
+    // Optimized: find last colon for port separation
+    lastColon := strings.LastIndexByte(remoteAddr, ':')
+    if lastColon != -1 && strings.IndexByte(remoteAddr, ']') == -1 {
+        // IPv4 with port
+        return remoteAddr[:lastColon]
+    } else if lastColon != -1 && remoteAddr[0] == '[' {
+        // IPv6 with port [::1]:8080
+        if endBracket := strings.IndexByte(remoteAddr, ']'); endBracket != -1 {
+            return remoteAddr[1:endBracket]
+        }
     }
-    return ip
+    
+    // No port or parsing failed
+    return remoteAddr
 }
 
 func (ctx *Ctx[V]) Cookie(name string) (string, error) {
@@ -404,7 +448,7 @@ func mapForm(ptr interface{}, formData url.Values) error {
 
 // Auto-selects appropriate binding method based on Content-Type
 func (ctx *Ctx[V]) ShouldBind(obj interface{}) error {
-    contentType := ctx.GetHeader("Content-Type")
+    contentType := ctx.GetHeader(HeaderContentType)
     contentType, _, _ = mime.ParseMediaType(contentType)
 
     switch contentType {
@@ -720,8 +764,8 @@ func (ctx *Ctx[V]) SendData(statusCode int, contentType string, data []byte) err
     }
     
     // Set headers
-    ctx.SetHeader("Content-Type", contentType)
-    ctx.SetHeader("Content-Length", strconv.Itoa(len(data)))
+    ctx.SetHeader(HeaderContentType, contentType)
+    ctx.SetHeader(HeaderContentLength, strconv.Itoa(len(data)))
     ctx.SetStatus(statusCode)
     
     // Write data

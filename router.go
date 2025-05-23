@@ -471,9 +471,9 @@ func (r *Router[V]) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	// Optionally add security headers - only add if enabled
 	if EnableSecurityHeaders {
 		header := w.Header()
-		header.Set("X-Content-Type-Options", "nosniff")
-		header.Set("X-Frame-Options", "DENY")
-		header.Set("X-XSS-Protection", "1; mode=block")
+		header.Set(HeaderXContentTypeOptions, "nosniff")
+		header.Set(HeaderXFrameOptions, "DENY")
+		header.Set(HeaderXXSSProtection, "1; mode=block")
 	}
 
 	// Find matching route
@@ -484,7 +484,7 @@ func (r *Router[V]) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		handler = func(ctx *Ctx[V]) {
 			// Fast path for OPTIONS requests
 			if req.Method == "OPTIONS" {
-				w.Header().Set("Allow", "GET, POST, PUT, DELETE, PATCH, OPTIONS, HEAD")
+				w.Header().Set(HeaderAllow, "GET, POST, PUT, DELETE, PATCH, OPTIONS, HEAD")
 				w.WriteHeader(http.StatusOK)
 				// Nothing to write so no error to check
 				return
@@ -539,6 +539,11 @@ func (r *Router[V]) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	
 	// Return context to pool
 	// Clear sensitive data before returning to pool
+	// Return buffer to pool if it was allocated
+	if ctx.ResponseWriter != nil && ctx.ResponseWriter.Body != nil {
+		ctx.ResponseWriter.Body.Reset()
+		bufferPool.Put(ctx.ResponseWriter.Body)
+	}
 	ctx.ResponseWriter = nil
 	ctx.Request = nil
 	ctx.Query = nil

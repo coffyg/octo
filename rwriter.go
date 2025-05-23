@@ -8,6 +8,7 @@ import (
     "net/http"
 )
 
+
 // Provides response tracking and implements standard http interfaces
 type ResponseWriterWrapper struct {
     http.ResponseWriter
@@ -19,7 +20,9 @@ type ResponseWriterWrapper struct {
 func NewResponseWriterWrapper(w http.ResponseWriter) *ResponseWriterWrapper {
     var buf *bytes.Buffer
     if !DeferBufferAllocation {
-        buf = &bytes.Buffer{}
+        // Use buffer pool from ctx.go
+        buf = bufferPool.Get().(*bytes.Buffer)
+        buf.Reset()
     }
 
     return &ResponseWriterWrapper{

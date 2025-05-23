@@ -138,37 +138,40 @@ func Static[V any](urlPrefix string, config StaticConfig) HandlerFunc[V] {
 
 		// Handle caching headers
 		etag := generateETag(info)
-		ctx.SetHeader("ETag", etag)
+		ctx.SetHeader(HeaderETag, etag)
 		
 		if config.MaxAge > 0 {
-			ctx.SetHeader("Cache-Control", "public, max-age="+strconv.Itoa(config.MaxAge))
+			ctx.SetHeader(HeaderCacheControl, "public, max-age="+strconv.Itoa(config.MaxAge))
 		}
 
 		// Check if-none-match
-		if match := ctx.GetHeader("If-None-Match"); match == etag {
+		if match := ctx.GetHeader(HeaderIfNoneMatch); match == etag {
 			ctx.SetStatus(http.StatusNotModified)
+			ctx.Done()
 			return
 		}
 
 		// Check if-modified-since
-		if modifiedSince := ctx.GetHeader("If-Modified-Since"); modifiedSince != "" {
+		if modifiedSince := ctx.GetHeader(HeaderIfModifiedSince); modifiedSince != "" {
 			t, err := time.Parse(http.TimeFormat, modifiedSince)
 			if err == nil && info.ModTime().Before(t.Add(1*time.Second)) {
 				ctx.SetStatus(http.StatusNotModified)
+				ctx.Done()
 				return
 			}
 		}
 
 		// Set content type
 		contentType := getContentType(fullPath)
-		ctx.SetHeader("Content-Type", contentType)
-		ctx.SetHeader("Last-Modified", info.ModTime().UTC().Format(http.TimeFormat))
+		ctx.SetHeader(HeaderContentType, contentType)
+		ctx.SetHeader(HeaderLastModified, info.ModTime().UTC().Format(http.TimeFormat))
 
 		// Serve from cache if enabled and file is small enough
 		if config.EnableCaching && info.Size() < 10*1024*1024 { // Cache files under 10MB
 			if cached := fileCache.get(fullPath); cached != nil {
 				if cached.modTime.Equal(info.ModTime()) {
 					ctx.ResponseWriter.Write(cached.content)
+					ctx.Done()
 					return
 				}
 			}
@@ -190,6 +193,7 @@ func Static[V any](urlPrefix string, config StaticConfig) HandlerFunc[V] {
 			})
 
 			ctx.ResponseWriter.Write(content)
+			ctx.Done()
 			return
 		}
 
@@ -203,6 +207,7 @@ func Static[V any](urlPrefix string, config StaticConfig) HandlerFunc[V] {
 
 		// Use io.Copy which can use sendfile syscall on Linux
 		io.Copy(ctx.ResponseWriter, file)
+		ctx.Done()
 	}
 }
 

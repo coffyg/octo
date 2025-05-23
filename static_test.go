@@ -132,8 +132,7 @@ func TestStaticCaching(t *testing.T) {
 	w1 := httptest.NewRecorder()
 	router.ServeHTTP(w1, req1)
 	
-	resp1 := w1.Result()
-	etag := resp1.Header.Get("ETag")
+	etag := w1.Header().Get("ETag")
 	if etag == "" {
 		t.Error("Expected ETag header")
 	}
@@ -144,8 +143,7 @@ func TestStaticCaching(t *testing.T) {
 	w2 := httptest.NewRecorder()
 	router.ServeHTTP(w2, req2)
 	
-	resp2 := w2.Result()
-	if resp2.StatusCode != 304 {
-		t.Errorf("Expected 304 Not Modified, got %d", resp2.StatusCode)
+	if w2.Code != 304 {
+		t.Errorf("Expected 304 Not Modified, got %d", w2.Code)
 	}
 }

@@ -28,14 +28,14 @@ func ErrorContextMiddleware[V any]() MiddlewareFunc[V] {
             
             // Only collect non-sensitive headers
             safeHeaders := []string{
-                "User-Agent",
-                "Accept",
-                "Accept-Language",
-                "Accept-Encoding",
-                "Content-Type",
-                "Content-Length",
-                "X-Request-ID",
-                "X-Correlation-ID",
+                HeaderUserAgent,
+                HeaderAccept,
+                HeaderAcceptLanguage,
+                HeaderAcceptEncoding,
+                HeaderContentType,
+                HeaderContentLength,
+                HeaderXRequestID,
+                HeaderXCorrelationID,
             }
             
             for _, header := range safeHeaders {
