@@ -316,19 +316,27 @@ func (ctx *Ctx[V]) ClientIP() string {
         return "0.0.0.0"
     }
     
-    // Optimized: find last colon for port separation
-    lastColon := strings.LastIndexByte(remoteAddr, ':')
-    if lastColon != -1 && strings.IndexByte(remoteAddr, ']') == -1 {
-        // IPv4 with port
-        return remoteAddr[:lastColon]
-    } else if lastColon != -1 && remoteAddr[0] == '[' {
-        // IPv6 with port [::1]:8080
+    // Handle IPv6 addresses
+    if len(remoteAddr) > 0 && remoteAddr[0] == '[' {
+        // IPv6 with brackets [::1] or [::1]:8080
         if endBracket := strings.IndexByte(remoteAddr, ']'); endBracket != -1 {
             return remoteAddr[1:endBracket]
         }
     }
     
-    // No port or parsing failed
+    // For IPv4, find last colon for port separation
+    lastColon := strings.LastIndexByte(remoteAddr, ':')
+    if lastColon != -1 {
+        // Check if this might be IPv6 by counting colons
+        colonCount := strings.Count(remoteAddr, ":")
+        if colonCount == 1 {
+            // IPv4 with port (192.168.1.1:8080)
+            return remoteAddr[:lastColon]
+        }
+        // Multiple colons, likely IPv6 without brackets (::1)
+    }
+    
+    // Return as-is for IPv6 without port or any unparseable format
     return remoteAddr
 }
 
