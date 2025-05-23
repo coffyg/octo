@@ -6,7 +6,6 @@ import (
 	"os"
 	"runtime/debug"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -38,30 +37,14 @@ type Router[V any] struct {
 	root               *node[V]
 	middleware         []MiddlewareFunc[V]
 	preGroupMiddleware []MiddlewareFunc[V]
-	ctxPool            sync.Pool
-	headerPool         sync.Pool
 }
 
 func NewRouter[V any]() *Router[V] {
-	r := &Router[V]{
+	return &Router[V]{
 		root: &node[V]{
 			staticChildren: make(map[string]*node[V], 8), // Pre-allocate common size
 		},
 	}
-	r.ctxPool = sync.Pool{
-		New: func() interface{} {
-			return &Ctx[V]{
-				Params: make(map[string]string, 4), // Pre-allocate for common case
-			}
-		},
-	}
-	r.headerPool = sync.Pool{
-		New: func() interface{} {
-			// Pre-allocate header map with common size
-			return make(http.Header, 16)
-		},
-	}
-	return r
 }
 
 // UseGlobal adds middleware that applies to all routes before group middleware
@@ -498,18 +481,15 @@ func (r *Router[V]) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	// Wrap the response writer
 	responseWriter := NewResponseWriterWrapper(w)
 
-	// Get context from pool
-	ctx := r.ctxPool.Get().(*Ctx[V])
-	
-	// Reset and initialize context
-	ctx.ResponseWriter = responseWriter
-	ctx.Request = req
-	ctx.StartTime = time.Now().UnixNano()
-	ctx.UUID = uuid.NewString()
-	ctx.Query = req.URL.Query() // Parse upfront to maintain backward compatibility
-	ctx.done = false
-	ctx.hasReadBody = false
-	ctx.Body = nil
+	// Create new context - pooling removed due to goroutine safety issues
+	ctx := &Ctx[V]{
+		ResponseWriter: responseWriter,
+		Request:        req,
+		StartTime:      time.Now().UnixNano(),
+		UUID:           uuid.NewString(),
+		Query:          req.URL.Query(), // Parse upfront to maintain backward compatibility
+		Params:         make(map[string]string, 4), // Pre-allocate for common case
+	}
 	ctx.Headers = nil
 	
 	// Handle parameters
@@ -537,22 +517,11 @@ func (r *Router[V]) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	handler = applyMiddleware(handler, middlewareChain)
 	handler(ctx)
 	
-	// Return context to pool
-	// Clear sensitive data before returning to pool
-	// Return buffer to pool if it was allocated
+	// Cleanup buffer pool only
 	if ctx.ResponseWriter != nil && ctx.ResponseWriter.Body != nil {
 		ctx.ResponseWriter.Body.Reset()
 		bufferPool.Put(ctx.ResponseWriter.Body)
 	}
-	ctx.ResponseWriter = nil
-	ctx.Request = nil
-	ctx.Query = nil
-	ctx.Body = nil
-	ctx.Headers = nil
-	// Keep Params allocated for reuse
-	var zero V
-	ctx.Custom = zero
-	r.ctxPool.Put(ctx)
 }
 
 func (r *Router[V]) search(method, path string) (HandlerFunc[V], []MiddlewareFunc[V], map[string]string, bool) {
