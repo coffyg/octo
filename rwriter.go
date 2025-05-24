@@ -46,11 +46,9 @@ func (w *ResponseWriterWrapper) Write(data []byte) (int, error) {
             w.Body = &bytes.Buffer{}
         }
         
-        // Copy the data to avoid race conditions if the data is modified concurrently
-        dataCopy := make([]byte, len(data))
-        copy(dataCopy, data)
-        
-        _, bufferErr := w.Body.Write(dataCopy)
+        // Write directly without copying - the caller is responsible for not modifying data
+        // after Write returns (standard io.Writer contract)
+        _, bufferErr := w.Body.Write(data)
         if bufferErr != nil && EnableLoggerCheck {
             if logger != nil {
                 logger.Error().Err(bufferErr).Msg("[octo] failed to write to response buffer")

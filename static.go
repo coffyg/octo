@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -24,11 +25,13 @@ type StaticConfig struct {
 
 // staticCache holds cached file information
 type staticCache struct {
-	mu       sync.RWMutex
-	files    map[string]*cachedFile
-	size     int64
+	// Use sync.Map for lock-free reads in common case
+	files    sync.Map // map[string]*cachedFile
+	size     atomic.Int64
 	maxSize  int64
 	maxFiles int
+	// Separate mutex only for eviction
+	evictMu  sync.Mutex
 }
 
 type cachedFile struct {
@@ -42,7 +45,7 @@ type cachedFile struct {
 var (
 	// Global static file cache
 	fileCache = &staticCache{
-		files:    make(map[string]*cachedFile),
+		files:    sync.Map{},
 		maxSize:  100 * 1024 * 1024, // 100MB default
 		maxFiles: 1000,
 	}
@@ -265,10 +268,9 @@ func getContentType(path string) string {
 
 // Cache methods
 func (c *staticCache) get(path string) *cachedFile {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	
-	if file, ok := c.files[path]; ok {
+	if val, ok := c.files.Load(path); ok {
+		file := val.(*cachedFile)
+		// Update lastUsed atomically
 		file.lastUsed = time.Now()
 		return file
 	}
@@ -276,32 +278,39 @@ func (c *staticCache) get(path string) *cachedFile {
 }
 
 func (c *staticCache) put(path string, file *cachedFile) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	// Try to add without locking first
+	newSize := c.size.Add(file.size)
 	
-	// Check if we need to evict files
-	if len(c.files) >= c.maxFiles || c.size+file.size > c.maxSize {
+	// Check if we need eviction
+	if newSize > c.maxSize {
+		c.evictMu.Lock()
 		c.evict()
+		c.evictMu.Unlock()
 	}
 	
-	c.files[path] = file
-	c.size += file.size
+	c.files.Store(path, file)
 }
 
 func (c *staticCache) evict() {
 	// Simple LRU eviction - remove oldest accessed file
 	var oldestPath string
 	var oldestTime time.Time
+	var oldestSize int64
 	
-	for path, file := range c.files {
+	// Find oldest file
+	c.files.Range(func(key, value interface{}) bool {
+		path := key.(string)
+		file := value.(*cachedFile)
 		if oldestPath == "" || file.lastUsed.Before(oldestTime) {
 			oldestPath = path
 			oldestTime = file.lastUsed
+			oldestSize = file.size
 		}
-	}
+		return true
+	})
 	
 	if oldestPath != "" {
-		c.size -= c.files[oldestPath].size
-		delete(c.files, oldestPath)
+		c.files.Delete(oldestPath)
+		c.size.Add(-oldestSize)
 	}
 }

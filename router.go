@@ -29,8 +29,6 @@ type node[V any] struct {
 	handlers       map[string]*routeEntry[V]
 	middleware     []MiddlewareFunc[V]
 	parent         *node[V]
-	// Optimization: compressed path for common static prefixes
-	compressedPath string
 }
 
 type Router[V any] struct {
@@ -40,11 +38,13 @@ type Router[V any] struct {
 }
 
 func NewRouter[V any]() *Router[V] {
+
 	return &Router[V]{
 		root: &node[V]{
 			staticChildren: make(map[string]*node[V], 8), // Pre-allocate common size
 		},
 	}
+
 }
 
 // UseGlobal adds middleware that applies to all routes before group middleware
@@ -460,7 +460,7 @@ func (r *Router[V]) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	}
 
 	// Find matching route
-	handler, middlewareChain, params, ok := r.searchOptimized(method, path)
+	handler, middlewareChain, params, ok := r.search(method, path)
 
 	// Handle not found case
 	if !ok {
@@ -481,17 +481,17 @@ func (r *Router[V]) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	// Wrap the response writer
 	responseWriter := NewResponseWriterWrapper(w)
 
-	// Create new context - pooling removed due to goroutine safety issues
+	// Get or create context
+	// Create new context
 	ctx := &Ctx[V]{
 		ResponseWriter: responseWriter,
 		Request:        req,
 		StartTime:      time.Now().UnixNano(),
-		UUID:           uuid.NewString(),
-		Query:          req.URL.Query(), // Parse upfront to maintain backward compatibility
+		UUID:           uuid.NewString(),           // Fast request ID instead of UUID
+		Query:          req.URL.Query(),            // Parse upfront to maintain backward compatibility
 		Params:         make(map[string]string, 4), // Pre-allocate for common case
 	}
-	ctx.Headers = nil
-	
+
 	// Handle parameters
 	if params != nil {
 		// Reuse existing map if possible
@@ -516,154 +516,17 @@ func (r *Router[V]) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	// Apply middleware chain and execute
 	handler = applyMiddleware(handler, middlewareChain)
 	handler(ctx)
-	
-	// Cleanup buffer pool only
+
+	// Cleanup
 	if ctx.ResponseWriter != nil && ctx.ResponseWriter.Body != nil {
 		ctx.ResponseWriter.Body.Reset()
 		bufferPool.Put(ctx.ResponseWriter.Body)
 	}
+
 }
 
+// search performs zero-allocation path matching
 func (r *Router[V]) search(method, path string) (HandlerFunc[V], []MiddlewareFunc[V], map[string]string, bool) {
-	// Fast path for root or empty path
-	if path == "" || path == "/" {
-		if r.root.isLeaf {
-			if handlerEntry, ok := r.root.handlers[method]; ok {
-				return handlerEntry.handler, handlerEntry.middleware, make(map[string]string), true
-			}
-		}
-	}
-
-	// Split path into segments
-	parts := splitPath(path)
-	if len(parts) == 0 {
-		// Handle paths like "///" by checking root handler
-		if r.root.isLeaf {
-			if handlerEntry, ok := r.root.handlers[method]; ok {
-				return handlerEntry.handler, handlerEntry.middleware, make(map[string]string), true
-			}
-		}
-		return nil, nil, nil, false
-	}
-
-	cur := r.root
-	// Pre-allocate parameter values slice to avoid multiple allocations
-	paramValues := make([]string, 0, 8) // Most paths have fewer than 8 parameters
-
-	for i, part := range parts {
-		if part == "" {
-			continue
-		}
-
-		// Try static child first (most common case)
-		if cur.staticChildren != nil {
-			if child, ok := cur.staticChildren[part]; ok {
-				cur = child
-				continue
-			}
-		}
-
-		// Try embedded parameter matching
-		matched := false
-		if cur.staticChildren != nil {
-			for key, child := range cur.staticChildren {
-				if strings.HasPrefix(part, key) {
-					remaining := part[len(key):]
-					if remaining != "" {
-						cur = child
-						part = remaining
-
-						// Handle nested parameter patterns
-						for {
-							if cur.paramChild != nil {
-								paramValues = append(paramValues, part)
-								cur = cur.paramChild
-								matched = true
-								break
-							}
-
-							if cur.staticChildren == nil {
-								break
-							}
-
-							// Check for static prefix matches
-							found := false
-							for k, c := range cur.staticChildren {
-								if strings.HasPrefix(part, k) {
-									cur = c
-									part = part[len(k):]
-									found = true
-									break
-								}
-							}
-
-							if !found {
-								break
-							}
-						}
-
-						if matched {
-							break
-						}
-					}
-				}
-			}
-		}
-
-		if matched {
-			continue
-		}
-
-		// Try parameter child
-		if cur.paramChild != nil {
-			paramValues = append(paramValues, part)
-			cur = cur.paramChild
-			continue
-		}
-
-		// Try wildcard child (lowest priority)
-		if cur.wildcardChild != nil {
-			// Join remaining parts for wildcard param
-			remainingParts := strings.Join(parts[i:], "/")
-			paramValues = append(paramValues, remainingParts)
-			cur = cur.wildcardChild
-			break
-		}
-
-		// No match found for this segment
-		return nil, nil, nil, false
-	}
-
-	// Check if we reached a leaf node with a handler for this method
-	if !cur.isLeaf {
-		return nil, nil, nil, false
-	}
-
-	handlerEntry, ok := cur.handlers[method]
-	if !ok {
-		return nil, nil, nil, false
-	}
-
-	// Create parameter map only when needed
-	var params map[string]string
-	if len(handlerEntry.paramNames) > 0 {
-		// Only allocate if we have parameter names
-		paramCount := len(handlerEntry.paramNames)
-		if paramCount > 0 {
-			params = make(map[string]string, paramCount)
-			for i, paramName := range handlerEntry.paramNames {
-				if i < len(paramValues) {
-					params[paramName] = paramValues[i]
-				}
-			}
-		}
-	}
-
-	return handlerEntry.handler, handlerEntry.middleware, params, true
-}
-
-// searchOptimized performs zero-allocation path matching
-func (r *Router[V]) searchOptimized(method, path string) (HandlerFunc[V], []MiddlewareFunc[V], map[string]string, bool) {
 	// Fast path for root or empty path
 	if path == "" || path == "/" {
 		if r.root.isLeaf {
@@ -823,7 +686,7 @@ func (r *Router[V]) tryStaticFastPath(method, path string) (HandlerFunc[V], []Mi
 	if len(segments) == 0 {
 		return nil, nil, false
 	}
-	
+
 	cur := r.root
 	for _, segment := range segments {
 		if segment == "" {
@@ -838,16 +701,16 @@ func (r *Router[V]) tryStaticFastPath(method, path string) (HandlerFunc[V], []Mi
 		}
 		cur = child
 	}
-	
+
 	if !cur.isLeaf {
 		return nil, nil, false
 	}
-	
+
 	handlerEntry, ok := cur.handlers[method]
 	if !ok {
 		return nil, nil, false
 	}
-	
+
 	return handlerEntry.handler, handlerEntry.middleware, true
 }
 
