@@ -515,13 +515,16 @@ func (r *Router[V]) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
 	// Apply middleware chain and execute
 	handler = applyMiddleware(handler, middlewareChain)
+	
+	// Ensure cleanup happens even if handler panics
+	defer func() {
+		if ctx.ResponseWriter != nil && ctx.ResponseWriter.Body != nil {
+			ctx.ResponseWriter.Body.Reset()
+			bufferPool.Put(ctx.ResponseWriter.Body)
+		}
+	}()
+	
 	handler(ctx)
-
-	// Cleanup
-	if ctx.ResponseWriter != nil && ctx.ResponseWriter.Body != nil {
-		ctx.ResponseWriter.Body.Reset()
-		bufferPool.Put(ctx.ResponseWriter.Body)
-	}
 
 }
 
@@ -555,6 +558,11 @@ func (r *Router[V]) search(method, path string) (HandlerFunc[V], []MiddlewareFun
 				return handlerEntry.handler, handlerEntry.middleware, nil, true
 			}
 		}
+		return nil, nil, nil, false
+	}
+	
+	// Prevent DoS via extremely long paths
+	if len(segments) > 100 {
 		return nil, nil, nil, false
 	}
 

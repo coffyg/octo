@@ -46,12 +46,19 @@ func (w *ResponseWriterWrapper) Write(data []byte) (int, error) {
             w.Body = &bytes.Buffer{}
         }
         
-        // Write directly without copying - the caller is responsible for not modifying data
-        // after Write returns (standard io.Writer contract)
-        _, bufferErr := w.Body.Write(data)
-        if bufferErr != nil && EnableLoggerCheck {
-            if logger != nil {
-                logger.Error().Err(bufferErr).Msg("[octo] failed to write to response buffer")
+        // Limit captured body size to prevent unbounded growth
+        const maxCaptureSize = 100 * 1024 * 1024 // 100MB limit
+        if w.Body.Len() < maxCaptureSize {
+            // Only capture up to the limit
+            remaining := maxCaptureSize - w.Body.Len()
+            if len(data) > remaining {
+                data = data[:remaining]
+            }
+            _, bufferErr := w.Body.Write(data)
+            if bufferErr != nil && EnableLoggerCheck {
+                if logger != nil {
+                    logger.Error().Err(bufferErr).Msg("[octo] failed to write to response buffer")
+                }
             }
         }
     }

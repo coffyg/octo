@@ -209,7 +209,17 @@ func Static[V any](urlPrefix string, config StaticConfig) HandlerFunc[V] {
 		defer file.Close()
 
 		// Use io.Copy which can use sendfile syscall on Linux
-		io.Copy(ctx.ResponseWriter, file)
+		_, copyErr := io.Copy(ctx.ResponseWriter, file)
+		if copyErr != nil {
+			// Log error but response may be partially sent
+			if !EnableLoggerCheck || logger != nil {
+				logger.Error().
+					Err(copyErr).
+					Str("path", fullPath).
+					Str("ip", ctx.ClientIP()).
+					Msg("[octo] failed to send file")
+			}
+		}
 		ctx.Done()
 	}
 }
@@ -293,24 +303,52 @@ func (c *staticCache) put(path string, file *cachedFile) {
 
 func (c *staticCache) evict() {
 	// Simple LRU eviction - remove oldest accessed file
-	var oldestPath string
-	var oldestTime time.Time
-	var oldestSize int64
+	// Under high load, just remove 10% of cache entries to avoid long iterations
+	type cacheEntry struct {
+		path string
+		file *cachedFile
+	}
 	
-	// Find oldest file
+	var entries []cacheEntry
+	count := 0
+	
+	// Collect entries (stop after reasonable amount to avoid blocking)
 	c.files.Range(func(key, value interface{}) bool {
-		path := key.(string)
-		file := value.(*cachedFile)
-		if oldestPath == "" || file.lastUsed.Before(oldestTime) {
-			oldestPath = path
-			oldestTime = file.lastUsed
-			oldestSize = file.size
+		count++
+		if count > 100 { // Limit scanning to first 100 entries
+			return false
 		}
+		entries = append(entries, cacheEntry{
+			path: key.(string),
+			file: value.(*cachedFile),
+		})
 		return true
 	})
 	
-	if oldestPath != "" {
-		c.files.Delete(oldestPath)
-		c.size.Add(-oldestSize)
+	if len(entries) == 0 {
+		return
+	}
+	
+	// Remove 10% of scanned entries (at least 1)
+	toRemove := len(entries) / 10
+	if toRemove < 1 {
+		toRemove = 1
+	}
+	
+	// Sort by last used time (oldest first)
+	for i := 0; i < toRemove && i < len(entries); i++ {
+		oldestIdx := i
+		for j := i + 1; j < len(entries); j++ {
+			if entries[j].file.lastUsed.Before(entries[oldestIdx].file.lastUsed) {
+				oldestIdx = j
+			}
+		}
+		// Swap
+		if oldestIdx != i {
+			entries[i], entries[oldestIdx] = entries[oldestIdx], entries[i]
+		}
+		// Remove the entry
+		c.files.Delete(entries[i].path)
+		c.size.Add(-entries[i].file.size)
 	}
 }
