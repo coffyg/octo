@@ -874,14 +874,14 @@ func (ctx *Ctx[V]) DetectConnectionType() {
         return
     }
     
-    // Check for WebSocket upgrade
+    // Check for WebSocket upgrade - proper header-based detection
     if strings.EqualFold(ctx.Request.Header.Get("Connection"), "Upgrade") &&
        strings.EqualFold(ctx.Request.Header.Get("Upgrade"), "websocket") {
         ctx.ConnectionType = ConnectionTypeWebSocket
         return
     }
     
-    // Check for SSE based on Accept header ONLY - not the fucking path
+    // Check for SSE based on Accept header ONLY
     accept := ctx.Request.Header.Get("Accept")
     if strings.Contains(accept, "text/event-stream") {
         ctx.ConnectionType = ConnectionTypeSSE
