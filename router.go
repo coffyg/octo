@@ -504,8 +504,16 @@ func (r *Router[V]) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		Params:         make(map[string]string, 4), // Pre-allocate for common case
 	}
 	
-	// Connection type detection is now handled by ConnectionDetectionMiddleware
-	// which runs before panic recovery middleware
+	// Detect connection type IMMEDIATELY when creating context
+	// This MUST happen before any middleware runs
+	if strings.Contains(req.Header.Get("Accept"), "text/event-stream") {
+		ctx.ConnectionType = ConnectionTypeSSE
+	} else if strings.EqualFold(req.Header.Get("Connection"), "Upgrade") &&
+		   strings.EqualFold(req.Header.Get("Upgrade"), "websocket") {
+		ctx.ConnectionType = ConnectionTypeWebSocket
+	} else {
+		ctx.ConnectionType = ConnectionTypeHTTP
+	}
 	
 	// Disable write deadline for streaming connections (SSE/WebSocket)
 	if ctx.IsStreamingConnection() {
