@@ -506,11 +506,20 @@ func (r *Router[V]) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	
 	// Detect connection type IMMEDIATELY when creating context
 	// This MUST happen before any middleware runs
-	if strings.Contains(req.Header.Get("Accept"), "text/event-stream") {
-		ctx.ConnectionType = ConnectionTypeSSE
-	} else if strings.EqualFold(req.Header.Get("Connection"), "Upgrade") &&
-		   strings.EqualFold(req.Header.Get("Upgrade"), "websocket") {
+	
+	// WebSocket detection (most specific, check first)
+	if strings.EqualFold(req.Header.Get("Connection"), "Upgrade") &&
+	   strings.EqualFold(req.Header.Get("Upgrade"), "websocket") {
 		ctx.ConnectionType = ConnectionTypeWebSocket
+	} else if strings.HasSuffix(path, "/sse") {
+		// SSE detection by path - most reliable method
+		// Chrome and other browsers often don't send Accept: text/event-stream
+		// in the request headers for EventSource API
+		ctx.ConnectionType = ConnectionTypeSSE
+	} else if strings.Contains(req.Header.Get("Accept"), "text/event-stream") {
+		// SSE detection by Accept header - for compliant clients
+		// This is a fallback for clients that do send the header
+		ctx.ConnectionType = ConnectionTypeSSE
 	} else {
 		ctx.ConnectionType = ConnectionTypeHTTP
 	}
