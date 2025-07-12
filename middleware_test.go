@@ -2,6 +2,7 @@ package octo
 
 import (
 	"fmt"
+	"net/http"
 	"net/http/httptest"
 	"testing"
 )
@@ -187,5 +188,101 @@ func benchmarkSingleMiddlewareImpl[V any](
 			Params:         make(map[string]string),
 		}
 		finalHandler(ctx)
+	}
+}
+
+func TestConnectionDetectionMiddleware(t *testing.T) {
+	tests := []struct {
+		name           string
+		headers        map[string]string
+		expectedType   ConnectionType
+	}{
+		{
+			name: "SSE Connection",
+			headers: map[string]string{
+				"Accept": "text/event-stream",
+			},
+			expectedType: ConnectionTypeSSE,
+		},
+		{
+			name: "WebSocket Connection",
+			headers: map[string]string{
+				"Connection": "Upgrade",
+				"Upgrade":    "websocket",
+			},
+			expectedType: ConnectionTypeWebSocket,
+		},
+		{
+			name:         "Regular HTTP",
+			headers:      map[string]string{},
+			expectedType: ConnectionTypeHTTP,
+		},
+		{
+			name: "SSE with other Accept values",
+			headers: map[string]string{
+				"Accept": "text/html, text/event-stream, application/json",
+			},
+			expectedType: ConnectionTypeSSE,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Create a test request
+			req := httptest.NewRequest("GET", "/test", nil)
+			for k, v := range tt.headers {
+				req.Header.Set(k, v)
+			}
+
+			// Create a test response writer
+			w := httptest.NewRecorder()
+
+			// Create context
+			ctx := &Ctx[any]{
+				ResponseWriter: NewResponseWriterWrapper(w),
+				Request:        req,
+			}
+
+			// Apply middleware
+			var capturedType ConnectionType
+			middleware := ConnectionDetectionMiddleware[any]()
+			handler := middleware(func(c *Ctx[any]) {
+				capturedType = c.ConnectionType
+			})
+
+			// Execute
+			handler(ctx)
+
+			// Verify
+			if capturedType != tt.expectedType {
+				t.Errorf("Expected connection type %v, got %v", tt.expectedType, capturedType)
+			}
+		})
+	}
+}
+
+func TestRecoveryMiddlewareWithSSE(t *testing.T) {
+	// Create SSE request
+	req := httptest.NewRequest("GET", "/sse", nil)
+	req.Header.Set("Accept", "text/event-stream")
+	
+	w := httptest.NewRecorder()
+	
+	// Create router with middleware
+	router := NewRouter[any]()
+	router.UseGlobal(ConnectionDetectionMiddleware[any]())
+	router.UseGlobal(RecoveryMiddleware[any]())
+	
+	// Add route that panics with http.ErrAbortHandler (simulating client disconnect)
+	router.GET("/sse", func(ctx *Ctx[any]) {
+		panic(http.ErrAbortHandler)
+	})
+	
+	// Execute request
+	router.ServeHTTP(w, req)
+	
+	// Should not return 500 error for SSE client disconnect
+	if w.Code == http.StatusInternalServerError {
+		t.Error("SSE disconnect should not return 500 error")
 	}
 }

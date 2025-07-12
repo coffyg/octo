@@ -504,8 +504,8 @@ func (r *Router[V]) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		Params:         make(map[string]string, 4), // Pre-allocate for common case
 	}
 	
-	// Detect connection type early - but this is still too late for panic recovery
-	ctx.DetectConnectionType()
+	// Connection type detection is now handled by ConnectionDetectionMiddleware
+	// which runs before panic recovery middleware
 	
 	// Disable write deadline for streaming connections (SSE/WebSocket)
 	if ctx.IsStreamingConnection() {
