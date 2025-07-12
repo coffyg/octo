@@ -35,6 +35,15 @@ var bufferPool = sync.Pool{
 	},
 }
 
+// ConnectionType represents the type of HTTP connection
+type ConnectionType int
+
+const (
+	ConnectionTypeHTTP ConnectionType = iota
+	ConnectionTypeSSE
+	ConnectionTypeWebSocket
+)
+
 // HTTP request context with typed custom data field
 type Ctx[V any] struct {
     ResponseWriter *ResponseWriterWrapper `json:"-"`
@@ -46,6 +55,7 @@ type Ctx[V any] struct {
     Body           []byte                 `json:"-"`
     Headers        http.Header            `json:"-"`
     Custom         V                      // Generic Custom Field
+    ConnectionType ConnectionType         `json:"-"`
     done           bool
     hasReadBody    bool
 }
@@ -855,6 +865,37 @@ func (ctx *Ctx[V]) FormValue(key string) string {
 
 func (ctx *Ctx[V]) SendString(statusCode int, s string) {
     ctx.SendData(statusCode, "text/plain", []byte(s))
+}
+
+// DetectConnectionType analyzes the request headers to determine the connection type
+func (ctx *Ctx[V]) DetectConnectionType() {
+    if ctx.Request == nil {
+        ctx.ConnectionType = ConnectionTypeHTTP
+        return
+    }
+    
+    // Check for WebSocket upgrade
+    if strings.EqualFold(ctx.Request.Header.Get("Connection"), "Upgrade") &&
+       strings.EqualFold(ctx.Request.Header.Get("Upgrade"), "websocket") {
+        ctx.ConnectionType = ConnectionTypeWebSocket
+        return
+    }
+    
+    // Check for SSE based on Accept header or path
+    accept := ctx.Request.Header.Get("Accept")
+    if strings.Contains(accept, "text/event-stream") ||
+       strings.Contains(ctx.Request.URL.Path, "/sse") ||
+       strings.Contains(ctx.Request.URL.Path, "/events") {
+        ctx.ConnectionType = ConnectionTypeSSE
+        return
+    }
+    
+    ctx.ConnectionType = ConnectionTypeHTTP
+}
+
+// IsStreamingConnection returns true if the connection is SSE or WebSocket
+func (ctx *Ctx[V]) IsStreamingConnection() bool {
+    return ctx.ConnectionType == ConnectionTypeSSE || ctx.ConnectionType == ConnectionTypeWebSocket
 }
 
 // Standard response envelope for all API responses

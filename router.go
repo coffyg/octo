@@ -12,6 +12,18 @@ import (
 	"github.com/pkg/errors"
 )
 
+// getConnectionTypeName returns a string representation of the connection type
+func getConnectionTypeName(ct ConnectionType) string {
+	switch ct {
+	case ConnectionTypeSSE:
+		return "SSE"
+	case ConnectionTypeWebSocket:
+		return "WebSocket"
+	default:
+		return "HTTP"
+	}
+}
+
 type HandlerFunc[V any] func(*Ctx[V])
 type MiddlewareFunc[V any] func(HandlerFunc[V]) HandlerFunc[V]
 
@@ -491,6 +503,9 @@ func (r *Router[V]) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		Query:          req.URL.Query(),            // Parse upfront to maintain backward compatibility
 		Params:         make(map[string]string, 4), // Pre-allocate for common case
 	}
+	
+	// Detect connection type early
+	ctx.DetectConnectionType()
 
 	// Handle parameters
 	if params != nil {
@@ -790,13 +805,26 @@ func RecoveryMiddleware[V any]() MiddlewareFunc[V] {
 
 					// Handle client aborted requests differently (less severe)
 					if errors.Is(wrappedErr, http.ErrAbortHandler) {
-						// Skip logging if logger is disabled
-						if !EnableLoggerCheck || logger != nil {
-							logger.Warn().
-								Str("path", ctx.Request.URL.Path).
-								Str("method", ctx.Request.Method).
-								Str("ip", ctx.ClientIP()).
-								Msg("[octo-panic] Client aborted request (panic recovered)")
+						// For streaming connections, client disconnects are expected
+						if ctx.IsStreamingConnection() {
+							// Skip logging entirely or use debug level
+							if !EnableLoggerCheck || logger != nil {
+								logger.Debug().
+									Str("path", ctx.Request.URL.Path).
+									Str("method", ctx.Request.Method).
+									Str("ip", ctx.ClientIP()).
+									Str("conn_type", getConnectionTypeName(ctx.ConnectionType)).
+									Msg("[octo-stream] Client disconnected from streaming connection")
+							}
+						} else {
+							// For regular HTTP, log as warning
+							if !EnableLoggerCheck || logger != nil {
+								logger.Warn().
+									Str("path", ctx.Request.URL.Path).
+									Str("method", ctx.Request.Method).
+									Str("ip", ctx.ClientIP()).
+									Msg("[octo-panic] Client aborted request (panic recovered)")
+							}
 						}
 						return
 					}
