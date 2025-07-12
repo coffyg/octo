@@ -504,7 +504,7 @@ func (r *Router[V]) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		Params:         make(map[string]string, 4), // Pre-allocate for common case
 	}
 	
-	// Detect connection type early
+	// Detect connection type early - but this is still too late for panic recovery
 	ctx.DetectConnectionType()
 	
 	// Disable write deadline for streaming connections (SSE/WebSocket)
@@ -827,9 +827,7 @@ func RecoveryMiddleware[V any]() MiddlewareFunc[V] {
 					// Handle client aborted requests differently (less severe)
 					if errors.Is(wrappedErr, http.ErrAbortHandler) {
 						// For streaming connections, client disconnects are expected
-						// Check path directly here as well as a fallback
-						isSSEPath := strings.Contains(ctx.Request.URL.Path, "/sse") || strings.Contains(ctx.Request.URL.Path, "/events")
-						if ctx.IsStreamingConnection() || isSSEPath {
+						if ctx.IsStreamingConnection() {
 							// Skip logging entirely or use debug level
 							if !EnableLoggerCheck || logger != nil {
 								logger.Debug().
@@ -837,8 +835,6 @@ func RecoveryMiddleware[V any]() MiddlewareFunc[V] {
 									Str("method", ctx.Request.Method).
 									Str("ip", ctx.ClientIP()).
 									Str("conn_type", getConnectionTypeName(ctx.ConnectionType)).
-									Bool("is_streaming", ctx.IsStreamingConnection()).
-									Bool("is_sse_path", isSSEPath).
 									Msg("[octo-stream] Client disconnected from streaming connection")
 							}
 						} else {
@@ -848,7 +844,6 @@ func RecoveryMiddleware[V any]() MiddlewareFunc[V] {
 									Str("path", ctx.Request.URL.Path).
 									Str("method", ctx.Request.Method).
 									Str("ip", ctx.ClientIP()).
-									Int("conn_type_int", int(ctx.ConnectionType)).
 									Msg("[octo-panic] Client aborted request (panic recovered)")
 							}
 						}

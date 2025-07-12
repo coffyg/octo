@@ -881,11 +881,9 @@ func (ctx *Ctx[V]) DetectConnectionType() {
         return
     }
     
-    // Check for SSE based on Accept header or path
+    // Check for SSE based on Accept header ONLY - not the fucking path
     accept := ctx.Request.Header.Get("Accept")
-    if strings.Contains(accept, "text/event-stream") ||
-       strings.Contains(ctx.Request.URL.Path, "/sse") ||
-       strings.Contains(ctx.Request.URL.Path, "/events") {
+    if strings.Contains(accept, "text/event-stream") {
         ctx.ConnectionType = ConnectionTypeSSE
         return
     }
