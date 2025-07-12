@@ -506,6 +506,27 @@ func (r *Router[V]) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	
 	// Detect connection type early
 	ctx.DetectConnectionType()
+	
+	// Disable write deadline for streaming connections (SSE/WebSocket)
+	if ctx.IsStreamingConnection() {
+		rc := http.NewResponseController(w)
+		if err := rc.SetWriteDeadline(time.Time{}); err != nil {
+			if !EnableLoggerCheck || logger != nil {
+				logger.Warn().
+					Err(err).
+					Str("path", req.URL.Path).
+					Str("conn_type", getConnectionTypeName(ctx.ConnectionType)).
+					Msg("[octo-router] Failed to disable write deadline for streaming connection")
+			}
+		} else {
+			if !EnableLoggerCheck || logger != nil {
+				logger.Debug().
+					Str("path", req.URL.Path).
+					Str("conn_type", getConnectionTypeName(ctx.ConnectionType)).
+					Msg("[octo-router] Disabled write deadline for streaming connection")
+			}
+		}
+	}
 
 	// Handle parameters
 	if params != nil {
