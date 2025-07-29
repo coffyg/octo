@@ -136,11 +136,9 @@ func (ctx *Ctx[V]) SendJSON(statusCode int, v interface{}) error {
         if EnableLoggerCheck && logger == nil {
             // Skip logging if logger is disabled
         } else {
-            logger.Error().
-                Err(err).
-                Str("path", ctx.Request.URL.Path).
-                Str("ip", ctx.ClientIP()).
-                Msg("[octo] failed to write response")
+            // Log with full request context
+            wrappedErr := Wrap(err, ErrInternal, "failed to write response")
+            LogErrorWithRequest(logger, wrappedErr, ctx.Request, ctx.ClientIP())
         }
         ctx.Done()
         return err
@@ -541,7 +539,7 @@ func (ctx *Ctx[V]) readBodyWithSizeLimit() error {
 func (ctx *Ctx[V]) logBodyReadError(err error) {
     octoErr := Wrap(err, ErrInvalidRequest, "failed to read request body")
     if ctx.Request != nil {
-        LogErrorWithPathIP(logger, octoErr, ctx.Request.URL.Path, ctx.ClientIP())
+        LogErrorWithRequest(logger, octoErr, ctx.Request, ctx.ClientIP())
     } else {
         LogError(logger, octoErr)
     }
@@ -555,18 +553,12 @@ func (ctx *Ctx[V]) logBodySizeError(err error) {
         }
     }
     
-    // Create base error event with body size info
-    event := logger.Error().Err(err).Int64("maxSize", GetMaxBodySize())
-    
-    // Add path and IP when available - avoid compound conditional
+    // Log with full request context
     if ctx.Request != nil {
-        if ctx.Request.URL != nil {
-            event = event.Str("path", ctx.Request.URL.Path)
-        }
-        event = event.Str("ip", ctx.ClientIP())
+        LogErrorWithRequest(logger, err, ctx.Request, ctx.ClientIP())
+    } else {
+        LogError(logger, err)
     }
-    
-    event.Msg("[octo] request body exceeds maximum allowed size")
 }
 
 // Sends standardized error response with proper HTTP status code
@@ -603,9 +595,9 @@ func (ctx *Ctx[V]) SendError(code string, err error) {
         message = message + ": " + octoErr.Original.Error()
     }
     
-    // Log the error with request path and IP context
+    // Log the error with full request context including host and URL
     if ctx.Request != nil {
-        LogErrorWithPathIP(logger, octoErr, ctx.Request.URL.Path, ctx.ClientIP())
+        LogErrorWithRequest(logger, octoErr, ctx.Request, ctx.ClientIP())
     } else {
         LogError(logger, octoErr)
     }
@@ -652,9 +644,9 @@ func (ctx *Ctx[V]) SendErrorStatus(statusCode int, code string, err error) {
         message = message + ": " + octoErr.Original.Error()
     }
     
-    // Log the error with request path and IP context
+    // Log the error with full request context including host and URL
     if ctx.Request != nil {
-        LogErrorWithPathIP(logger, octoErr, ctx.Request.URL.Path, ctx.ClientIP())
+        LogErrorWithRequest(logger, octoErr, ctx.Request, ctx.ClientIP())
     } else {
         LogError(logger, octoErr)
     }
@@ -673,9 +665,9 @@ func (ctx *Ctx[V]) buildErrorMessage(baseMessage string, err error) string {
     // Create an OctoError
     octoErr := Wrap(err, ErrUnknown, baseMessage)
     
-    // Log it properly with path and IP if available
+    // Log it properly with full request context if available
     if ctx.Request != nil {
-        LogErrorWithPathIP(logger, octoErr, ctx.Request.URL.Path, ctx.ClientIP())
+        LogErrorWithRequest(logger, octoErr, ctx.Request, ctx.ClientIP())
     } else {
         LogError(logger, octoErr)
     }
@@ -691,7 +683,7 @@ func (ctx *Ctx[V]) buildErrorMessage(baseMessage string, err error) string {
     return baseMessage + ": " + err.Error()
 }
 
-// DEPRECATED: Maintained for backward compatibility. Use LogError instead.
+// DEPRECATED: Maintained for backward compatibility. Use LogErrorWithRequest instead.
 func (ctx *Ctx[V]) logError(err error, file string, line int, funcName string) {
     // Create temporary OctoError with the file and line info
     octoErr := &OctoError{
@@ -703,8 +695,12 @@ func (ctx *Ctx[V]) logError(err error, file string, line int, funcName string) {
         function:   funcName,
     }
     
-    // Log using the new system
-    LogError(logger, octoErr)
+    // Log using the new system with request context if available
+    if ctx.Request != nil {
+        LogErrorWithRequest(logger, octoErr, ctx.Request, ctx.ClientIP())
+    } else {
+        LogError(logger, octoErr)
+    }
 }
 
 func (ctx *Ctx[V]) createErrorResult(code string, message string) BaseResult {
@@ -728,10 +724,24 @@ func (ctx *Ctx[V]) Send404() {
     if ctx.done {
         return
     }
-    // Create a custom error with request path in message
+    // Create a custom error with full URL in message
     var err error
     if ctx.Request != nil {
-        err = Newf(ErrNotFound, "Route not found: %s", ctx.Request.URL.Path)
+        // Build full URL
+        scheme := "http"
+        if ctx.Request.TLS != nil {
+            scheme = "https"
+        }
+        // Check X-Forwarded-Proto header for proxy scenarios
+        if proto := ctx.Request.Header.Get("X-Forwarded-Proto"); proto != "" {
+            scheme = proto
+        }
+        host := ctx.Request.Host
+        if host == "" {
+            host = ctx.Request.URL.Host
+        }
+        fullURL := fmt.Sprintf("%s://%s%s", scheme, host, ctx.Request.URL.RequestURI())
+        err = Newf(ErrNotFound, "Route not found: %s", fullURL)
     }
     ctx.SendError(string(ErrNotFound), err)
 }
@@ -799,23 +809,16 @@ func (ctx *Ctx[V]) SendData(statusCode int, contentType string, data []byte) err
 }
 
 func (ctx *Ctx[V]) logDataWriteError(err error) {
-    path := ctx.Request.URL.Path
-    clientIP := ctx.ClientIP()
+    if EnableLoggerCheck && logger == nil {
+        return
+    }
     
-    if EnableLoggerCheck {
-        if logger != nil {
-            logger.Error().
-                Err(err).
-                Str("ip", clientIP).
-                Str("path", path).
-                Msg("[octo] failed to write response data")
-        }
+    // Log with full request context
+    wrappedErr := Wrap(err, ErrInternal, "failed to write response data")
+    if ctx.Request != nil {
+        LogErrorWithRequest(logger, wrappedErr, ctx.Request, ctx.ClientIP())
     } else {
-        logger.Error().
-            Err(err).
-            Str("ip", clientIP).
-            Str("path", path).
-            Msg("[octo] failed to write response data")
+        LogError(logger, wrappedErr)
     }
 }
 
