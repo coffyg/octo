@@ -64,3 +64,4 @@ CLAUDE.md
 # Benchmark results
 bench/
 *.results
+/bench_results
