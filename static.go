@@ -169,6 +169,13 @@ func Static[V any](urlPrefix string, config StaticConfig) HandlerFunc[V] {
 		ctx.SetHeader(HeaderContentType, contentType)
 		ctx.SetHeader(HeaderLastModified, info.ModTime().UTC().Format(http.TimeFormat))
 
+
+	// Skip body write for HEAD requests (avoids Go HTTP/2 bug #66812)
+	if ctx.Request.Method == http.MethodHead {
+		ctx.Done()
+		return
+	}
+
 		// Serve from cache if enabled and file is small enough
 		if config.EnableCaching && info.Size() < 10*1024*1024 { // Cache files under 10MB
 			if cached := fileCache.get(fullPath); cached != nil {

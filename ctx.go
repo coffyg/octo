@@ -134,19 +134,22 @@ func (ctx *Ctx[V]) SendJSON(statusCode int, v interface{}) error {
     ctx.SetHeader(HeaderContentType, ContentTypeJSON)
     ctx.SetHeader(HeaderContentLength, strconv.Itoa(len(data)))
     ctx.SetStatus(statusCode)
-    
-    _, err = ctx.ResponseWriter.Write(data)
-    if err != nil {
-        // Simplify nested conditionals
-        if EnableLoggerCheck && logger == nil {
-            // Skip logging if logger is disabled
-        } else {
-            // Log with full request context
-            wrappedErr := Wrap(err, ErrInternal, "failed to write response")
-            LogErrorWithRequest(logger, wrappedErr, ctx.Request, ctx.ClientIP())
+
+    // Skip body write for HEAD requests (avoids Go HTTP/2 bug #66812)
+    if ctx.Request.Method != http.MethodHead {
+        _, err = ctx.ResponseWriter.Write(data)
+        if err != nil {
+            // Simplify nested conditionals
+            if EnableLoggerCheck && logger == nil {
+                // Skip logging if logger is disabled
+            } else {
+                // Log with full request context
+                wrappedErr := Wrap(err, ErrInternal, "failed to write response")
+                LogErrorWithRequest(logger, wrappedErr, ctx.Request, ctx.ClientIP())
+            }
+            ctx.Done()
+            return err
         }
-        ctx.Done()
-        return err
     }
     
     ctx.Done()
@@ -806,13 +809,16 @@ func (ctx *Ctx[V]) SendData(statusCode int, contentType string, data []byte) err
     ctx.SetHeader(HeaderContentType, contentType)
     ctx.SetHeader(HeaderContentLength, strconv.Itoa(len(data)))
     ctx.SetStatus(statusCode)
-    
-    // Write data
-    _, err := ctx.ResponseWriter.Write(data)
-    if err != nil {
-        ctx.logDataWriteError(err)
-        // Return error to caller for proper handling
-        return err
+
+    // Skip body write for HEAD requests (avoids Go HTTP/2 bug #66812)
+    if ctx.Request.Method != http.MethodHead {
+        // Write data
+        _, err := ctx.ResponseWriter.Write(data)
+        if err != nil {
+            ctx.logDataWriteError(err)
+            // Return error to caller for proper handling
+            return err
+        }
     }
     
     ctx.Done()
