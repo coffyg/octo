@@ -46,18 +46,19 @@ const (
 
 // HTTP request context with typed custom data field
 type Ctx[V any] struct {
-    ResponseWriter *ResponseWriterWrapper `json:"-"`
-    Request        *http.Request          `json:"-"`
-    Params         map[string]string      `json:"Params"`
-    Query          map[string][]string    `json:"Query"`
-    StartTime      int64                  `json:"StartTime"`
-    UUID           string                 `json:"UUID"`
-    Body           []byte                 `json:"-"`
-    Headers        http.Header            `json:"-"`
-    Custom         V                      // Generic Custom Field
-    ConnectionType ConnectionType         `json:"-"`
-    done           bool
-    hasReadBody    bool
+    ResponseWriter   *ResponseWriterWrapper `json:"-"`
+    Request          *http.Request          `json:"-"`
+    Params           map[string]string      `json:"Params"`
+    Query            map[string][]string    `json:"Query"`
+    StartTime        int64                  `json:"StartTime"`
+    UUID             string                 `json:"UUID"`
+    Body             []byte                 `json:"-"`
+    Headers          http.Header            `json:"-"`
+    Custom           V                      // Generic Custom Field
+    ConnectionType   ConnectionType         `json:"-"`
+    done             bool
+    hasReadBody      bool
+    maxBodySizeBytes *int64                 // Per-request body size override (nil = use global)
 }
 
 func (ctx *Ctx[V]) SetHeader(key, value string) {
@@ -84,6 +85,10 @@ func (ctx *Ctx[V]) SetParam(key, value string) {
 
 func (ctx *Ctx[V]) SetStatus(code int) {
     ctx.ResponseWriter.WriteHeader(code)
+}
+
+func (ctx *Ctx[V]) SetMaxBodySize(bytes int64) {
+    ctx.maxBodySizeBytes = &bytes
 }
 
 func (ctx *Ctx[V]) JSON(statusCode int, v interface{}) error {
@@ -512,17 +517,23 @@ func (ctx *Ctx[V]) NeedBody() error {
 
 // Reads request body with size limit enforcement
 func (ctx *Ctx[V]) readBodyWithSizeLimit() error {
+    // Use per-request override if set, otherwise use global
+    maxSize := GetMaxBodySize()
+    if ctx.maxBodySizeBytes != nil {
+        maxSize = *ctx.maxBodySizeBytes
+    }
+
     // Add 1 byte to detect if the body is too large
-    limitedReader := io.LimitReader(ctx.Request.Body, GetMaxBodySize()+1)
+    limitedReader := io.LimitReader(ctx.Request.Body, maxSize+1)
     body, err := io.ReadAll(limitedReader)
-    
+
     if err != nil {
         ctx.logBodyReadError(err)
         return Wrap(err, ErrInvalidRequest, "failed to read request body")
     }
 
     // Check if body exceeds maximum size
-    if int64(len(body)) > GetMaxBodySize() {
+    if int64(len(body)) > maxSize {
         err := New(ErrInvalidRequest, "request body too large")
         ctx.logBodySizeError(err)
         return err
@@ -532,7 +543,7 @@ func (ctx *Ctx[V]) readBodyWithSizeLimit() error {
     ctx.Request.Body.Close()
     ctx.Request.Body = io.NopCloser(bytes.NewReader(body))
     ctx.Body = body
-    
+
     return nil
 }
 
