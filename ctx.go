@@ -132,7 +132,10 @@ func (ctx *Ctx[V]) SendJSON(statusCode int, v interface{}) error {
     buf := bufferPool.Get().(*bytes.Buffer)
     defer func() {
         buf.Reset()
-        bufferPool.Put(buf)
+        // Don't put large buffers back to pool to avoid memory leaks
+        if buf.Cap() <= 64*1024 {
+            bufferPool.Put(buf)
+        }
     }()
     
     // Create encoder with buffer

@@ -631,10 +631,10 @@ func (r *Router[V]) search(method string, path string, params map[string]string)
 							}
 						}
 
-							if matched {
-								break
-							}
+						if matched {
+							break
 						}
+					}
 				}
 			}
 
@@ -793,24 +793,24 @@ func RecoveryMiddleware[V any]() MiddlewareFunc[V] {
 							}
 						}
 						return
-						}
-
-						if !EnableLoggerCheck || logger != nil {
-							LogPanicWithRequestInfo(
-								logger,
-								r,
-								debug.Stack(),
-								ctx.Request.URL.Path,
-								ctx.Request.Method,
-								ctx.ClientIP())
-						}
-
-						contentType := ctx.ResponseWriter.Header().Get("Content-Type")
-						if ctx.ResponseWriter != nil && !strings.Contains(contentType, "application/json") {
-							http.Error(ctx.ResponseWriter, "Internal Server Error", http.StatusInternalServerError)
-						}
 					}
-				}()
+
+					if !EnableLoggerCheck || logger != nil {
+						LogPanicWithRequestInfo(
+							logger,
+							r,
+							debug.Stack(),
+							ctx.Request.URL.Path,
+							ctx.Request.Method,
+							ctx.ClientIP())
+					}
+
+					contentType := ctx.ResponseWriter.Header().Get("Content-Type")
+					if ctx.ResponseWriter != nil && !strings.Contains(contentType, "application/json") {
+						http.Error(ctx.ResponseWriter, "Internal Server Error", http.StatusInternalServerError)
+					}
+				}
+			}()
 			next(ctx)
 		}
 	}

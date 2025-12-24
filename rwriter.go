@@ -37,8 +37,15 @@ func (w *ResponseWriterWrapper) Reset(rw http.ResponseWriter) {
     w.ResponseWriter = rw
     w.Status = http.StatusOK
     w.CaptureBody = false
+    
+    // Prevent "noisy neighbor" memory leaks in pool
+    // If buffer capacity is too large (e.g. > 64KB), drop it
     if w.Body != nil {
-        w.Body.Reset()
+        if w.Body.Cap() > 64*1024 {
+            w.Body = nil
+        } else {
+            w.Body.Reset()
+        }
     }
 }
 
