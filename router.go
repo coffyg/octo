@@ -7,7 +7,6 @@ import (
 	"runtime/debug"
 	"strconv"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -50,7 +49,6 @@ type Router[V any] struct {
 	root               *node[V]
 	middleware         []MiddlewareFunc[V]
 	preGroupMiddleware []MiddlewareFunc[V]
-	writerPool         sync.Pool
 	requestIDCounter   uint64
 }
 
@@ -59,9 +57,6 @@ func NewRouter[V any]() *Router[V] {
 		root: &node[V]{
 			staticChildren: make(map[string]*node[V], 8), // Pre-allocate common size
 		},
-	}
-	r.writerPool.New = func() interface{} {
-		return NewResponseWriterWrapper(nil)
 	}
 	return r
 }
@@ -468,10 +463,8 @@ func (r *Router[V]) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		header.Set(HeaderXXSSProtection, "1; mode=block")
 	}
 
-	// Get pooled response writer
-	responseWriter := r.writerPool.Get().(*ResponseWriterWrapper)
-	responseWriter.Reset(w)
-	defer r.writerPool.Put(responseWriter)
+	// Create new ResponseWriterWrapper (avoid pooling to prevent interface data races/segfaults)
+	responseWriter := NewResponseWriterWrapper(w)
 
 	// Create new context (avoid pooling to prevent race conditions in user code)
 	ctx := &Ctx[V]{

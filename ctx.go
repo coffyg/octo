@@ -12,28 +12,19 @@ import (
     "net"
     "net/http"
     "net/url"
-    "strconv"
-    "strings"
-    "sync"
-    "time"
-
-    // Third-party imports
+    	"strconv"
+    	"strings"
+    	"time"
+        // Third-party imports
     "github.com/go-playground/form/v4"
     "github.com/pkg/errors"
     
     // Internal imports
-    "github.com/coffyg/octypes"
-)
-
-// Global form decoder instance
-var formDecoder = form.NewDecoder()
-
-// Buffer pool for JSON encoding and other uses
-var bufferPool = sync.Pool{
-	New: func() interface{} {
-		return new(bytes.Buffer)
-	},
-}
+    		"github.com/coffyg/octypes"
+    	)
+    	
+    	// Global form decoder instance
+    	var formDecoder = form.NewDecoder()
 
 // ConnectionType represents the type of HTTP connection
 type ConnectionType int
@@ -96,67 +87,48 @@ func (ctx *Ctx[V]) JSON(statusCode int, v interface{}) error {
 }
 
 func (ctx *Ctx[V]) SendJSON(statusCode int, v interface{}) error {
-    if ctx.done {
-        return nil
-    }
+	if ctx.done {
+		return nil
+	}
 
-    // Validate input
-    if statusCode < 100 || statusCode > 599 {
-        ctx.SendError("err_invalid_status", New(ErrInvalidRequest, fmt.Sprintf("Invalid HTTP status code: %d", statusCode)))
-        return fmt.Errorf("invalid HTTP status code: %d", statusCode)
-    }
-    
-    // Get buffer from pool
-    buf := bufferPool.Get().(*bytes.Buffer)
-    defer func() {
-        buf.Reset()
-        // Don't put large buffers back to pool to avoid memory leaks
-        if buf.Cap() <= 64*1024 {
-            bufferPool.Put(buf)
-        }
-    }()
-    
-    // Create encoder with buffer
-    encoder := json.NewEncoder(buf)
-    encoder.SetEscapeHTML(false) // Avoid HTML escaping for performance
-    
-    // Encode to buffer
-    err := encoder.Encode(v)
-    if err != nil {
-        ctx.SendError("err_json_error", err)
-        return err
-    }
-    
-    // Remove trailing newline from encoder.Encode
-    data := buf.Bytes()
-    if len(data) > 0 && data[len(data)-1] == '\n' {
-        data = data[:len(data)-1]
-    }
-    
-    // Set headers
-    ctx.SetHeader(HeaderContentType, ContentTypeJSON)
-    ctx.SetHeader(HeaderContentLength, strconv.Itoa(len(data)))
-    ctx.SetStatus(statusCode)
+	// Validate input
+	if statusCode < 100 || statusCode > 599 {
+		ctx.SendError("err_invalid_status", New(ErrInvalidRequest, fmt.Sprintf("Invalid HTTP status code: %d", statusCode)))
+		return fmt.Errorf("invalid HTTP status code: %d", statusCode)
+	}
 
-    // Skip body write for HEAD requests (avoids Go HTTP/2 bug #66812)
-    if ctx.Request.Method != http.MethodHead {
-        _, err = ctx.ResponseWriter.Write(data)
-        if err != nil {
-            // Simplify nested conditionals
-            if EnableLoggerCheck && logger == nil {
-                // Skip logging if logger is disabled
-            } else {
-                // Log with full request context
-                wrappedErr := Wrap(err, ErrInternal, "failed to write response")
-                LogErrorWithRequest(logger, wrappedErr, ctx.Request, ctx.ClientIP())
-            }
-            ctx.Done()
-            return err
-        }
-    }
-    
-    ctx.Done()
-    return nil
+	// Use json.Marshal instead of pooled buffer to avoid memory corruption
+	// if the response writer retains the slice.
+	data, err := json.Marshal(v)
+	if err != nil {
+		ctx.SendError("err_json_error", err)
+		return err
+	}
+
+	// Set headers
+	ctx.SetHeader(HeaderContentType, ContentTypeJSON)
+	ctx.SetHeader(HeaderContentLength, strconv.Itoa(len(data)))
+	ctx.SetStatus(statusCode)
+
+	// Skip body write for HEAD requests (avoids Go HTTP/2 bug #66812)
+	if ctx.Request.Method != http.MethodHead {
+		_, err = ctx.ResponseWriter.Write(data)
+		if err != nil {
+			// Simplify nested conditionals
+			if EnableLoggerCheck && logger == nil {
+				// Skip logging if logger is disabled
+			} else {
+				// Log with full request context
+				wrappedErr := Wrap(err, ErrInternal, "failed to write response")
+				LogErrorWithRequest(logger, wrappedErr, ctx.Request, ctx.ClientIP())
+			}
+			ctx.Done()
+			return err
+		}
+	}
+	
+	ctx.Done()
+	return nil
 }
 
 func (ctx *Ctx[V]) Param(key string) string {

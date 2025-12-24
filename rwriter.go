@@ -18,35 +18,17 @@ type ResponseWriterWrapper struct {
 }
 
 func NewResponseWriterWrapper(w http.ResponseWriter) *ResponseWriterWrapper {
-    var buf *bytes.Buffer
-    if !DeferBufferAllocation {
-        // Use buffer pool from ctx.go
-        buf = bufferPool.Get().(*bytes.Buffer)
-        buf.Reset()
-    }
+	var buf *bytes.Buffer
+	if !DeferBufferAllocation {
+		buf = &bytes.Buffer{}
+	}
 
-    return &ResponseWriterWrapper{
-        ResponseWriter: w,
-        Status:         http.StatusOK,
-        Body:           buf,
-        CaptureBody:    false,
-    }
-}
-
-func (w *ResponseWriterWrapper) Reset(rw http.ResponseWriter) {
-    w.ResponseWriter = rw
-    w.Status = http.StatusOK
-    w.CaptureBody = false
-    
-    // Prevent "noisy neighbor" memory leaks in pool
-    // If buffer capacity is too large (e.g. > 64KB), drop it
-    if w.Body != nil {
-        if w.Body.Cap() > 64*1024 {
-            w.Body = nil
-        } else {
-            w.Body.Reset()
-        }
-    }
+	return &ResponseWriterWrapper{
+		ResponseWriter: w,
+		Status:         http.StatusOK,
+		Body:           buf,
+		CaptureBody:    false,
+	}
 }
 
 func (w *ResponseWriterWrapper) WriteHeader(statusCode int) {
