@@ -50,7 +50,6 @@ type Router[V any] struct {
 	root               *node[V]
 	middleware         []MiddlewareFunc[V]
 	preGroupMiddleware []MiddlewareFunc[V]
-	ctxPool            sync.Pool
 	writerPool         sync.Pool
 	requestIDCounter   uint64
 }
@@ -60,11 +59,6 @@ func NewRouter[V any]() *Router[V] {
 		root: &node[V]{
 			staticChildren: make(map[string]*node[V], 8), // Pre-allocate common size
 		},
-	}
-	r.ctxPool.New = func() interface{} {
-		return &Ctx[V]{
-			Params: make(map[string]string, 8),
-		}
 	}
 	r.writerPool.New = func() interface{} {
 		return NewResponseWriterWrapper(nil)
@@ -474,19 +468,18 @@ func (r *Router[V]) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		header.Set(HeaderXXSSProtection, "1; mode=block")
 	}
 
-	// Get pooled response writer and context
+	// Get pooled response writer
 	responseWriter := r.writerPool.Get().(*ResponseWriterWrapper)
 	responseWriter.Reset(w)
 	defer r.writerPool.Put(responseWriter)
 
-	ctx := r.ctxPool.Get().(*Ctx[V])
-	ctx.Reset()
-	defer r.ctxPool.Put(ctx)
-
-	// Initialize context
-	ctx.ResponseWriter = responseWriter
-	ctx.Request = req
-	ctx.StartTime = time.Now().UnixNano()
+	// Create new context (avoid pooling to prevent race conditions in user code)
+	ctx := &Ctx[V]{
+		ResponseWriter: responseWriter,
+		Request:        req,
+		StartTime:      time.Now().UnixNano(),
+		Params:         make(map[string]string, 4), // Pre-allocate small map
+	}
 	
 	// Fast request ID
 	reqID := atomic.AddUint64(&r.requestIDCounter, 1)
