@@ -33,6 +33,15 @@ func NewResponseWriterWrapper(w http.ResponseWriter) *ResponseWriterWrapper {
     }
 }
 
+func (w *ResponseWriterWrapper) Reset(rw http.ResponseWriter) {
+    w.ResponseWriter = rw
+    w.Status = http.StatusOK
+    w.CaptureBody = false
+    if w.Body != nil {
+        w.Body.Reset()
+    }
+}
+
 func (w *ResponseWriterWrapper) WriteHeader(statusCode int) {
     w.Status = statusCode
     w.ResponseWriter.WriteHeader(statusCode)

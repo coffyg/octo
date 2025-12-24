@@ -5,10 +5,12 @@ import (
 	"net/http"
 	"os"
 	"runtime/debug"
+	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/pkg/errors"
 )
 
@@ -28,9 +30,10 @@ type HandlerFunc[V any] func(*Ctx[V])
 type MiddlewareFunc[V any] func(HandlerFunc[V]) HandlerFunc[V]
 
 type routeEntry[V any] struct {
-	handler    HandlerFunc[V]
-	paramNames []string
-	middleware []MiddlewareFunc[V]
+	handler      HandlerFunc[V]
+	paramNames   []string
+	middleware   []MiddlewareFunc[V]
+	finalHandler HandlerFunc[V]
 }
 
 type node[V any] struct {
@@ -47,16 +50,26 @@ type Router[V any] struct {
 	root               *node[V]
 	middleware         []MiddlewareFunc[V]
 	preGroupMiddleware []MiddlewareFunc[V]
+	ctxPool            sync.Pool
+	writerPool         sync.Pool
+	requestIDCounter   uint64
 }
 
 func NewRouter[V any]() *Router[V] {
-
-	return &Router[V]{
+	r := &Router[V]{
 		root: &node[V]{
 			staticChildren: make(map[string]*node[V], 8), // Pre-allocate common size
 		},
 	}
-
+	r.ctxPool.New = func() interface{} {
+		return &Ctx[V]{
+			Params: make(map[string]string, 8),
+		}
+	}
+	r.writerPool.New = func() interface{} {
+		return NewResponseWriterWrapper(nil)
+	}
+	return r
 }
 
 // UseGlobal adds middleware that applies to all routes before group middleware
@@ -241,9 +254,10 @@ func (r *Router[V]) addRoute(method, path string, handler HandlerFunc[V], routeM
 	// Build the middleware chain
 	middlewareChain := r.buildMiddlewareChain(current, routeMW)
 	current.handlers[method] = &routeEntry[V]{
-		handler:    handler,
-		paramNames: paramNames,
-		middleware: middlewareChain,
+		handler:      handler,
+		paramNames:   paramNames,
+		middleware:   middlewareChain,
+		finalHandler: applyMiddleware(handler, middlewareChain),
 	}
 }
 
@@ -373,9 +387,8 @@ type pathSegment struct {
 	end   int
 }
 
-// splitPathZeroAlloc splits a path into segments without allocating strings
-// Returns the segments as start/end indices in the original path
-func splitPathZeroAlloc(path string) []pathSegment {
+// splitPathToSegments splits a path into segments using the provided scratch buffer if possible
+func splitPathToSegments(path string, scratch []pathSegment) []pathSegment {
 	if len(path) == 0 || path == "/" {
 		return nil
 	}
@@ -389,23 +402,13 @@ func splitPathZeroAlloc(path string) []pathSegment {
 	// Fast path for single segment
 	if len(path) < 3 || !strings.Contains(path[start:], "/") {
 		if start < len(path) {
-			return []pathSegment{{start: start, end: len(path)}}
+			return append(scratch, pathSegment{start: start, end: len(path)})
 		}
 		return nil
 	}
 
-	// Pre-count segments for exact allocation
-	segmentCount := 1
-	for i := start; i < len(path); i++ {
-		if path[i] == '/' {
-			segmentCount++
-		}
-	}
-
-	// Pre-allocate slice with exact capacity
-	segments := make([]pathSegment, 0, segmentCount)
-
 	// Split the path using indices
+	segments := scratch
 	segStart := start
 	for i := start; i <= len(path); i++ {
 		if i == len(path) || path[i] == '/' {
@@ -471,157 +474,105 @@ func (r *Router[V]) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		header.Set(HeaderXXSSProtection, "1; mode=block")
 	}
 
-	// Find matching route
-	handler, middlewareChain, params, ok := r.search(method, path)
+	// Get pooled response writer and context
+	responseWriter := r.writerPool.Get().(*ResponseWriterWrapper)
+	responseWriter.Reset(w)
+	defer r.writerPool.Put(responseWriter)
 
-	// Handle not found case
-	if !ok {
-		handler = func(ctx *Ctx[V]) {
-			// Fast path for OPTIONS requests
-			if req.Method == "OPTIONS" {
-				w.Header().Set(HeaderAllow, "GET, POST, PUT, DELETE, PATCH, OPTIONS, HEAD")
-				w.WriteHeader(http.StatusOK)
-				// Nothing to write so no error to check
-				return
-			}
-			// Use Send404 which includes path information in logs
-			ctx.Send404()
-		}
-		middlewareChain = r.globalMiddlewareChain()
-	}
+	ctx := r.ctxPool.Get().(*Ctx[V])
+	ctx.Reset()
+	defer r.ctxPool.Put(ctx)
 
-	// Wrap the response writer
-	responseWriter := NewResponseWriterWrapper(w)
-
-	// Get or create context
-	// Create new context
-	ctx := &Ctx[V]{
-		ResponseWriter: responseWriter,
-		Request:        req,
-		StartTime:      time.Now().UnixNano(),
-		UUID:           uuid.NewString(),           // Fast request ID instead of UUID
-		Query:          req.URL.Query(),            // Parse upfront to maintain backward compatibility
-		Params:         make(map[string]string, 4), // Pre-allocate for common case
-	}
+	// Initialize context
+	ctx.ResponseWriter = responseWriter
+	ctx.Request = req
+	ctx.StartTime = time.Now().UnixNano()
 	
+	// Fast request ID
+	reqID := atomic.AddUint64(&r.requestIDCounter, 1)
+	ctx.UUID = strconv.FormatUint(reqID, 10)
+
+	if req.URL.RawQuery != "" {
+		ctx.Query = req.URL.Query()
+	}
+
 	// Detect connection type IMMEDIATELY when creating context
-	// This MUST happen before any middleware runs
-	
-	// WebSocket detection (most specific, check first)
 	if strings.EqualFold(req.Header.Get("Connection"), "Upgrade") &&
-	   strings.EqualFold(req.Header.Get("Upgrade"), "websocket") {
+		strings.EqualFold(req.Header.Get("Upgrade"), "websocket") {
 		ctx.ConnectionType = ConnectionTypeWebSocket
 	} else if strings.HasSuffix(path, "/sse") {
-		// SSE detection by path - most reliable method
-		// Chrome and other browsers often don't send Accept: text/event-stream
-		// in the request headers for EventSource API
 		ctx.ConnectionType = ConnectionTypeSSE
 	} else if strings.Contains(req.Header.Get("Accept"), "text/event-stream") {
-		// SSE detection by Accept header - for compliant clients
-		// This is a fallback for clients that do send the header
 		ctx.ConnectionType = ConnectionTypeSSE
 	} else {
 		ctx.ConnectionType = ConnectionTypeHTTP
 	}
-	
-	// Disable write deadline for streaming connections (SSE/WebSocket)
+
+	// Disable write deadline for streaming connections
 	if ctx.IsStreamingConnection() {
 		rc := http.NewResponseController(w)
-		if err := rc.SetWriteDeadline(time.Time{}); err != nil {
-			if !EnableLoggerCheck || logger != nil {
-				logger.Warn().
-					Err(err).
-					Str("path", req.URL.Path).
-					Str("conn_type", getConnectionTypeName(ctx.ConnectionType)).
-					Msg("[octo-router] Failed to disable write deadline for streaming connection")
-			}
-		} else {
-			if !EnableLoggerCheck || logger != nil {
-				logger.Debug().
-					Str("path", req.URL.Path).
-					Str("conn_type", getConnectionTypeName(ctx.ConnectionType)).
-					Msg("[octo-router] Disabled write deadline for streaming connection")
-			}
-		}
+		_ = rc.SetWriteDeadline(time.Time{})
 	}
 
-	// Handle parameters
-	if params != nil {
-		// Reuse existing map if possible
-		if ctx.Params == nil {
-			ctx.Params = params
-		} else {
-			// Clear and copy
-			for k := range ctx.Params {
-				delete(ctx.Params, k)
+	// Find matching route
+	entry, ok := r.search(method, path, ctx.Params)
+
+	var finalHandler HandlerFunc[V]
+	if !ok {
+		handler := func(ctx *Ctx[V]) {
+			if req.Method == "OPTIONS" {
+				w.Header().Set(HeaderAllow, "GET, POST, PUT, DELETE, PATCH, OPTIONS, HEAD")
+				w.WriteHeader(http.StatusOK)
+				return
 			}
-			for k, v := range params {
-				ctx.Params[k] = v
-			}
+			ctx.Send404()
 		}
+		finalHandler = applyMiddleware(handler, r.globalMiddlewareChain())
 	} else {
-		// Clear params if no new params
-		for k := range ctx.Params {
-			delete(ctx.Params, k)
-		}
+		finalHandler = entry.finalHandler
 	}
 
-	// Apply middleware chain and execute
-	handler = applyMiddleware(handler, middlewareChain)
-	
-	// Ensure cleanup happens even if handler panics
-	defer func() {
-		if ctx.ResponseWriter != nil && ctx.ResponseWriter.Body != nil {
-			ctx.ResponseWriter.Body.Reset()
-			bufferPool.Put(ctx.ResponseWriter.Body)
-		}
-	}()
-	
-	handler(ctx)
-
+	finalHandler(ctx)
 }
 
 // search performs zero-allocation path matching
-func (r *Router[V]) search(method, path string) (HandlerFunc[V], []MiddlewareFunc[V], map[string]string, bool) {
+func (r *Router[V]) search(method string, path string, params map[string]string) (*routeEntry[V], bool) {
 	// Fast path for root or empty path
 	if path == "" || path == "/" {
 		if r.root.isLeaf {
 			if handlerEntry, ok := r.root.handlers[method]; ok {
-				return handlerEntry.handler, handlerEntry.middleware, nil, true
+				return handlerEntry, true
 			}
 		}
-		return nil, nil, nil, false
+		return nil, false
 	}
 
 	// Fast path for common static routes (no parameters)
-	// Check if path contains parameter markers for early exit
 	if !strings.ContainsAny(path, ":*") {
-		// Try direct static lookup first
-		if handler, middleware, ok := r.tryStaticFastPath(method, path); ok {
-			return handler, middleware, nil, true
+		if entry, ok := r.tryStaticFastPath(method, path); ok {
+			return entry, true
 		}
 	}
 
-	// Get path segments without allocation
-	segments := splitPathZeroAlloc(path)
+	// Get path segments
+	var segBuf [16]pathSegment
+	segments := splitPathToSegments(path, segBuf[:0])
 	if len(segments) == 0 {
-		// Handle paths like "///" by checking root handler
 		if r.root.isLeaf {
 			if handlerEntry, ok := r.root.handlers[method]; ok {
-				return handlerEntry.handler, handlerEntry.middleware, nil, true
+				return handlerEntry, true
 			}
 		}
-		return nil, nil, nil, false
+		return nil, false
 	}
-	
-	// Prevent DoS via extremely long paths
+
 	if len(segments) > 100 {
-		return nil, nil, nil, false
+		return nil, false
 	}
 
 	cur := r.root
-	// Pre-allocate parameter values slice to avoid multiple allocations
-	paramValues := make([]pathSegment, 0, 8) // Most paths have fewer than 8 parameters
+	var valBuf [8]pathSegment
+	paramValues := valBuf[:0]
 
 	for _, segment := range segments {
 		if segment.start >= segment.end {
@@ -680,10 +631,10 @@ func (r *Router[V]) search(method, path string) (HandlerFunc[V], []MiddlewareFun
 							}
 						}
 
-						if matched {
-							break
+							if matched {
+								break
+							}
 						}
-					}
 				}
 			}
 
@@ -712,23 +663,21 @@ func (r *Router[V]) search(method, path string) (HandlerFunc[V], []MiddlewareFun
 		}
 
 		// No match found for this segment
-		return nil, nil, nil, false
+		return nil, false
 	}
 
 	// Check if we reached a leaf node with a handler for this method
 	if !cur.isLeaf {
-		return nil, nil, nil, false
+		return nil, false
 	}
 
 	handlerEntry, ok := cur.handlers[method]
 	if !ok {
-		return nil, nil, nil, false
+		return nil, false
 	}
 
-	// Create parameter map only when needed
-	var params map[string]string
-	if len(handlerEntry.paramNames) > 0 && len(paramValues) > 0 {
-		params = make(map[string]string, len(handlerEntry.paramNames))
+	// Populate parameter map directly
+	if params != nil && len(handlerEntry.paramNames) > 0 && len(paramValues) > 0 {
 		for i, paramName := range handlerEntry.paramNames {
 			if i < len(paramValues) {
 				// Extract parameter value from path using segment indices
@@ -738,14 +687,14 @@ func (r *Router[V]) search(method, path string) (HandlerFunc[V], []MiddlewareFun
 		}
 	}
 
-	return handlerEntry.handler, handlerEntry.middleware, params, true
+	return handlerEntry, true
 }
 
 // tryStaticFastPath attempts a direct lookup for static routes
-func (r *Router[V]) tryStaticFastPath(method, path string) (HandlerFunc[V], []MiddlewareFunc[V], bool) {
+func (r *Router[V]) tryStaticFastPath(method, path string) (*routeEntry[V], bool) {
 	segments := splitPath(path)
 	if len(segments) == 0 {
-		return nil, nil, false
+		return nil, false
 	}
 
 	cur := r.root
@@ -754,39 +703,29 @@ func (r *Router[V]) tryStaticFastPath(method, path string) (HandlerFunc[V], []Mi
 			continue
 		}
 		if cur.staticChildren == nil {
-			return nil, nil, false
+			return nil, false
 		}
 		child, ok := cur.staticChildren[segment]
 		if !ok {
-			return nil, nil, false
+			return nil, false
 		}
 		cur = child
 	}
 
 	if !cur.isLeaf {
-		return nil, nil, false
+		return nil, false
 	}
 
 	handlerEntry, ok := cur.handlers[method]
 	if !ok {
-		return nil, nil, false
+		return nil, false
 	}
 
-	return handlerEntry.handler, handlerEntry.middleware, true
+	return handlerEntry, true
 }
 
-// Optimized middleware application that preserves the original middleware execution order
-// This approach ensures that middleware is applied in the correct sequence:
-// 1. First middleware in the chain (middleware[0]) runs first
-// 2. Last middleware in the chain (middleware[len-1]) runs last
-// 3. The handler runs after all middleware
-//
-// Performance optimizations:
-// - Processing middleware in reverse order for proper nesting
-// - Single ctx.done check per function call
-// - Avoids unnecessary nested function calls with simpler implementation
+// Optimized middleware application
 func applyMiddleware[V any](handler HandlerFunc[V], middleware []MiddlewareFunc[V]) HandlerFunc[V] {
-	// Fast path for no middleware
 	if len(middleware) == 0 {
 		return func(ctx *Ctx[V]) {
 			if ctx.done {
@@ -796,9 +735,6 @@ func applyMiddleware[V any](handler HandlerFunc[V], middleware []MiddlewareFunc[
 		}
 	}
 
-	// Apply middleware in reverse order to get the correct execution sequence
-	// Last middleware in the chain (middleware[len-1]) wraps the handler first
-	// First middleware in the chain (middleware[0]) is the outermost wrapper
 	result := handler
 	for i := len(middleware) - 1; i >= 0; i-- {
 		mw := middleware[i]
@@ -819,20 +755,16 @@ func RecoveryMiddleware[V any]() MiddlewareFunc[V] {
 		return func(ctx *Ctx[V]) {
 			defer func() {
 				if r := recover(); r != nil {
-					// Verify context is valid for panic handling
 					if ctx == nil {
-						// Critical case - can't do much except log to stderr
 						fmt.Fprintf(os.Stderr, "CRITICAL: Panic with nil context: %v\n", r)
 						return
 					}
 
 					if ctx.Request == nil {
-						// Log panic but with limited context available
 						LogPanic(logger, r, debug.Stack())
 						return
 					}
 
-					// Get error object from the recovered panic
 					var wrappedErr error
 					switch e := r.(type) {
 					case error:
@@ -841,11 +773,8 @@ func RecoveryMiddleware[V any]() MiddlewareFunc[V] {
 						wrappedErr = errors.Errorf("%v", r)
 					}
 
-					// Handle client aborted requests differently (less severe)
 					if errors.Is(wrappedErr, http.ErrAbortHandler) {
-						// For streaming connections, client disconnects are expected
 						if ctx.IsStreamingConnection() {
-							// Skip logging entirely or use debug level
 							if !EnableLoggerCheck || logger != nil {
 								logger.Debug().
 									Str("path", ctx.Request.URL.Path).
@@ -855,7 +784,6 @@ func RecoveryMiddleware[V any]() MiddlewareFunc[V] {
 									Msg("[octo-stream] Client disconnected from streaming connection")
 							}
 						} else {
-							// For regular HTTP, log as warning
 							if !EnableLoggerCheck || logger != nil {
 								logger.Warn().
 									Str("path", ctx.Request.URL.Path).
@@ -865,30 +793,24 @@ func RecoveryMiddleware[V any]() MiddlewareFunc[V] {
 							}
 						}
 						return
-					}
+						}
 
-					// For other panics, use our enhanced panic logging
-					// Only log if logger is enabled and available
-					if !EnableLoggerCheck || logger != nil {
-						// Use the improved human-readable panic logging
-						LogPanicWithRequestInfo(
-							logger,
-							r,
-							debug.Stack(),
-							ctx.Request.URL.Path,
-							ctx.Request.Method,
-							ctx.ClientIP())
-					}
+						if !EnableLoggerCheck || logger != nil {
+							LogPanicWithRequestInfo(
+								logger,
+								r,
+								debug.Stack(),
+								ctx.Request.URL.Path,
+								ctx.Request.Method,
+								ctx.ClientIP())
+						}
 
-					// Return an Internal Server Error response
-					// Check if we need to respond with JSON or plain text
-					contentType := ctx.ResponseWriter.Header().Get("Content-Type")
-					if ctx.ResponseWriter != nil && !strings.Contains(contentType, "application/json") {
-						// Send plain error message for non-JSON requests
-						http.Error(ctx.ResponseWriter, "Internal Server Error", http.StatusInternalServerError)
+						contentType := ctx.ResponseWriter.Header().Get("Content-Type")
+						if ctx.ResponseWriter != nil && !strings.Contains(contentType, "application/json") {
+							http.Error(ctx.ResponseWriter, "Internal Server Error", http.StatusInternalServerError)
+						}
 					}
-				}
-			}()
+				}()
 			next(ctx)
 		}
 	}

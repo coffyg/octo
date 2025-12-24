@@ -61,6 +61,28 @@ type Ctx[V any] struct {
     maxBodySizeBytes *int64                 // Per-request body size override (nil = use global)
 }
 
+func (ctx *Ctx[V]) Reset() {
+    ctx.ResponseWriter = nil
+    ctx.Request = nil
+    // Clear maps to preserve underlying storage
+    for k := range ctx.Params {
+        delete(ctx.Params, k)
+    }
+    for k := range ctx.Query {
+        delete(ctx.Query, k)
+    }
+    ctx.StartTime = 0
+    ctx.UUID = ""
+    ctx.Body = nil
+    ctx.Headers = nil
+    var zero V
+    ctx.Custom = zero
+    ctx.ConnectionType = ConnectionTypeHTTP
+    ctx.done = false
+    ctx.hasReadBody = false
+    ctx.maxBodySizeBytes = nil
+}
+
 func (ctx *Ctx[V]) SetHeader(key, value string) {
     // For common headers, we still use Set() to ensure proper canonicalization
     // The optimization comes from using pre-defined string constants

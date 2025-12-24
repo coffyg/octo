@@ -35,11 +35,13 @@ type staticCache struct {
 }
 
 type cachedFile struct {
-	content  []byte
-	modTime  time.Time
-	size     int64
-	etag     string
-	lastUsed time.Time
+	content     []byte
+	modTime     time.Time
+	modTimeStr  string // Pre-formatted for Last-Modified header
+	size        int64
+	etag        string
+	contentType string // Pre-detected content type
+	lastUsed    time.Time
 }
 
 var (
@@ -140,9 +142,31 @@ func Static[V any](urlPrefix string, config StaticConfig) HandlerFunc[V] {
 		}
 
 		// Handle caching headers
-		etag := generateETag(info)
+		var etag string
+		var modTimeStr string
+		var contentType string
+		var content []byte
+		var useCache bool
+
+		if config.EnableCaching {
+			if cached := fileCache.get(fullPath); cached != nil {
+				if cached.modTime.Equal(info.ModTime()) {
+					etag = cached.etag
+					modTimeStr = cached.modTimeStr
+					contentType = cached.contentType
+					content = cached.content
+					useCache = true
+				}
+			}
+		}
+
+		if !useCache {
+			etag = generateETag(info)
+			modTimeStr = info.ModTime().UTC().Format(http.TimeFormat)
+			contentType = getContentType(fullPath)
+		}
+
 		ctx.SetHeader(HeaderETag, etag)
-		
 		if config.MaxAge > 0 {
 			ctx.SetHeader(HeaderCacheControl, "public, max-age="+strconv.Itoa(config.MaxAge))
 		}
@@ -164,30 +188,26 @@ func Static[V any](urlPrefix string, config StaticConfig) HandlerFunc[V] {
 			}
 		}
 
-		// Set content type
-		contentType := getContentType(fullPath)
 		ctx.SetHeader(HeaderContentType, contentType)
-		ctx.SetHeader(HeaderLastModified, info.ModTime().UTC().Format(http.TimeFormat))
+		ctx.SetHeader(HeaderLastModified, modTimeStr)
 
+		// Skip body write for HEAD requests
+		if ctx.Request.Method == http.MethodHead {
+			ctx.Done()
+			return
+		}
 
-	// Skip body write for HEAD requests (avoids Go HTTP/2 bug #66812)
-	if ctx.Request.Method == http.MethodHead {
-		ctx.Done()
-		return
-	}
+		if useCache {
+			ctx.ResponseWriter.Write(content)
+			ctx.Done()
+			return
+		}
 
-		// Serve from cache if enabled and file is small enough
-		if config.EnableCaching && info.Size() < 10*1024*1024 { // Cache files under 10MB
-			if cached := fileCache.get(fullPath); cached != nil {
-				if cached.modTime.Equal(info.ModTime()) {
-					ctx.ResponseWriter.Write(cached.content)
-					ctx.Done()
-					return
-				}
-			}
-
+		// If caching is enabled but not in cache yet
+		if config.EnableCaching && info.Size() < 10*1024*1024 {
 			// Read and cache file
-			content, err := os.ReadFile(fullPath)
+			var err error
+			content, err = os.ReadFile(fullPath)
 			if err != nil {
 				ctx.SendError("err_internal_error", Wrap(err, ErrInternal, "Failed to read file"))
 				return
@@ -195,11 +215,13 @@ func Static[V any](urlPrefix string, config StaticConfig) HandlerFunc[V] {
 
 			// Cache the file
 			fileCache.put(fullPath, &cachedFile{
-				content:  content,
-				modTime:  info.ModTime(),
-				size:     info.Size(),
-				etag:     etag,
-				lastUsed: time.Now(),
+				content:     content,
+				modTime:     info.ModTime(),
+				modTimeStr:  modTimeStr,
+				size:        info.Size(),
+				etag:        etag,
+				contentType: contentType,
+				lastUsed:    time.Now(),
 			})
 
 			ctx.ResponseWriter.Write(content)
